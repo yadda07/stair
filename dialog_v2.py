@@ -14,9 +14,7 @@ from qgis.PyQt.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QPushButton, QLineEdit, QCheckBox, QFrame,
     QTextBrowser, QProgressBar, QFileDialog,
-    QWidget, QSplitter,
-    QRadioButton, QButtonGroup, QDialogButtonBox,
-    QDoubleSpinBox,
+    QWidget, QSplitter, QDialogButtonBox,
 )
 from qgis.PyQt.QtCore import Qt, QSize, QEvent, pyqtSignal
 from qgis.PyQt.QtGui import QTextCursor, QFont, QPalette, QColor
@@ -31,6 +29,7 @@ from .compat import (
     PAL_BRIGHT_TEXT, PAL_HIGHLIGHT,
     FRAME_HLINE, FRAME_SUNKEN, BTN_OK, BTN_CANCEL,
     LAYER_FILTER_POINT, LAYER_FILTER_POLYGON,
+    GEOM_POINT, GEOM_POLYGON,
 )
 from .project_detector import detect_project, DetectionResult, analyse_livrable
 from .async_tasks import SmoothProgressController
@@ -430,7 +429,6 @@ class PoleAerienDialogV2(QDialog):
         self._detection = DetectionResult()
         self._is_running = False
         self._module_rows = {}
-        self._project_mode = False
         self._chk_comac_drawings = None
         self._chk_data_dictionary = None
         self._sro_source = ''
@@ -450,8 +448,8 @@ class PoleAerienDialogV2(QDialog):
     # ==================================================================
 
     def _build_ui(self):
-        self.setWindowTitle("Pole Aerien - Analyse par lot")
-        self.setWindowIcon(_qgs_icon('mActionStart.svg'))
+        self.setWindowTitle("ST-AIR - Analyse par lot")
+        self.setWindowIcon(_plugin_icon('icon.svg'))
         self.setMinimumSize(700, 750)
         self.resize(740, 850)
 
@@ -475,7 +473,7 @@ class PoleAerienDialogV2(QDialog):
         top_lay.setContentsMargins(0, 0, 0, 0)
 
         self._build_project_group(top_lay)
-        self._build_mode_group(top_lay)
+        self._build_sro_group(top_lay)
         self._build_layers_group(top_lay)
         self._build_modules_group(top_lay)
         splitter.addWidget(top_widget)
@@ -504,10 +502,10 @@ class PoleAerienDialogV2(QDialog):
         lay.setSpacing(8)
 
         icon_lbl = QLabel()
-        icon_lbl.setPixmap(_qgs_icon('mActionStart.svg').pixmap(22, 22))
+        icon_lbl.setPixmap(_plugin_icon('icon.svg').pixmap(22, 22))
         lay.addWidget(icon_lbl)
 
-        title = QLabel("Pôle Aérien")
+        title = QLabel("ST-AIR")
         title_font = QFont()
         title_font.setPointSize(12)
         title_font.setBold(True)
@@ -621,41 +619,16 @@ class PoleAerienDialogV2(QDialog):
         grp.setLayout(lay)
         parent.addWidget(grp)
 
-    # ---- Mode group ----
-    def _build_mode_group(self, parent):
-        grp = QgsCollapsibleGroupBox("Mode d'execution")
-        grp.setObjectName("PoleAerien_grp_mode")
+    # ---- SRO group (ST-AIR : plus de mode BDD, toujours sur les couches QGIS) ----
+    def _build_sro_group(self, parent):
+        grp = QgsCollapsibleGroupBox("SRO du projet")
+        grp.setObjectName("PoleAerien_grp_sro")
         grp.setSettingGroup("PoleAerien/dialog_v2")
         lay = QVBoxLayout()
         lay.setSpacing(4)
         lay.setContentsMargins(6, 4, 6, 4)
 
-        # Radio buttons
-        radio_row = QHBoxLayout()
-        radio_row.setSpacing(12)
-
-        self._mode_group = QButtonGroup(self)
-        self._radio_qgis = QRadioButton("Couches QGIS")
-        self._radio_qgis.setToolTip(
-            "Utiliser les couches deja chargees dans le projet QGIS"
-        )
-        self._radio_project = QRadioButton("Mode Projet (BDD)")
-        self._radio_project.setToolTip(
-            "Charger automatiquement les couches depuis PostgreSQL "
-            "en filtrant par le SRO du projet"
-        )
-        self._mode_group.addButton(self._radio_qgis, 0)
-        self._mode_group.addButton(self._radio_project, 1)
-        self._radio_qgis.setChecked(True)
-
-        radio_row.addWidget(self._radio_qgis)
-        radio_row.addWidget(self._radio_project)
-        radio_row.addStretch()
-        lay.addLayout(radio_row)
-
-        # SRO info row (visible only in project mode)
-        self._sro_row = QWidget()
-        sro_lay = QHBoxLayout(self._sro_row)
+        sro_lay = QHBoxLayout()
         sro_lay.setContentsMargins(0, 2, 0, 0)
         sro_lay.setSpacing(6)
 
@@ -678,44 +651,16 @@ class PoleAerienDialogV2(QDialog):
         self._sro_status.setFont(_make_font(pt=8))
         sro_lay.addWidget(self._sro_status)
 
+        lay.addLayout(sro_lay)
 
-        self._sro_row.setVisible(False)
-        lay.addWidget(self._sro_row)
-
-        # Load layers checkbox (visible only in project mode)
-        self._chk_load_layers = QCheckBox(
-            "Charger les couches dans le projet QGIS"
+        hint = QLabel(
+            "Le SRO est detecte automatiquement a partir du nom de dossier "
+            "(ex. 63041-B1I-PMZ-00003). Corrigez-le si necessaire."
         )
-        self._chk_load_layers.setToolTip(
-            "Si coche, les couches filtrees par SRO seront ajoutees au projet QGIS.\n"
-            "Sinon, elles seront utilisees temporairement pour l'analyse uniquement."
-        )
-        self._chk_load_layers.setChecked(False)
-        self._chk_load_layers.setVisible(False)
-        lay.addWidget(self._chk_load_layers)
-
-        # Spatial tolerance (visible only in project mode)
-        self._spatial_row = QWidget()
-        sp_lay = QHBoxLayout(self._spatial_row)
-        sp_lay.setContentsMargins(0, 2, 0, 0)
-        sp_lay.setSpacing(6)
-        sp_lbl = QLabel("Rayon de recherche spatiale (m) :")
-        sp_lbl.setFont(_make_font(pt=8))
-        sp_lay.addWidget(sp_lbl)
-        self._spin_spatial_tol = QDoubleSpinBox()
-        self._spin_spatial_tol.setRange(0.5, 10.0)
-        self._spin_spatial_tol.setSingleStep(0.5)
-        self._spin_spatial_tol.setValue(7.5)
-        self._spin_spatial_tol.setSuffix(" m")
-        self._spin_spatial_tol.setToolTip(
-            "Rayon de recherche pour le matching spatial des poteaux\n"
-            "quand la correspondance par nom echoue (COMAC/CAPFT)."
-        )
-        self._spin_spatial_tol.setFixedWidth(80)
-        sp_lay.addWidget(self._spin_spatial_tol)
-        sp_lay.addStretch()
-        self._spatial_row.setVisible(False)
-        lay.addWidget(self._spatial_row)
+        hint.setFont(_make_font(pt=8))
+        hint.setWordWrap(True)
+        _set_foreground(hint, _ThemeColors.dim())
+        lay.addWidget(hint)
 
         grp.setLayout(lay)
         parent.addWidget(grp)
@@ -988,7 +933,6 @@ class PoleAerienDialogV2(QDialog):
         self.cancelBtn.clicked.connect(self._on_cancel_clicked)
         self.helpButton.clicked.connect(lambda: self.help_requested.emit())
         self.diagButton.clicked.connect(self._run_diagnostic)
-        self._mode_group.buttonClicked.connect(self._on_mode_changed)
         self.textBrowser.anchorClicked.connect(self._on_link_clicked)
         self._chk_comac_drawings.toggled.connect(lambda _: self._save_ui_state())
         self._chk_data_dictionary.toggled.connect(lambda _: self._save_ui_state())
@@ -1083,33 +1027,12 @@ class PoleAerienDialogV2(QDialog):
                 f"[OK] SRO {self._sro_source}"
             )
             _set_foreground(self._sro_status, _ThemeColors.ok())
-            self._radio_project.setEnabled(True)
         else:
             self._sro_status.setText("[--] Format invalide")
             _set_foreground(self._sro_status, _ThemeColors.warn())
             self._detection.sro = ''
         self._validate_start()
 
-
-    def _on_mode_changed(self, button):
-        is_project = (button == self._radio_project)
-        self._project_mode = is_project
-
-        # Toggle visibility
-        self._layers_grp.setVisible(not is_project)
-        self._sro_row.setVisible(is_project)
-        self._chk_load_layers.setVisible(is_project)
-        self._spatial_row.setVisible(is_project)
-
-        # Prompt SRO input if project mode selected but no SRO
-        if is_project and not self._detection.sro:
-            self._sro_value.clear()
-            self._sro_status.setText(
-                "[--] Saisissez le SRO ou utilisez la liste BDD"
-            )
-            _set_foreground(self._sro_status, _ThemeColors.warn())
-
-        self._validate_start()
 
     def _on_project_path_changed(self, path):
         if not path or not os.path.isdir(path):
@@ -1132,15 +1055,13 @@ class PoleAerienDialogV2(QDialog):
             self._sro_source = 'detecte'
             self._sro_status.setText("[OK] SRO detecte")
             _set_foreground(self._sro_status, _ThemeColors.ok())
-            self._radio_project.setEnabled(True)
         else:
             self._sro_value.clear()
             self._sro_source = ''
             self._sro_status.setText(
-                "[--] Saisissez le SRO ou utilisez la liste BDD"
+                "[--] Saisissez le SRO manuellement"
             )
             _set_foreground(self._sro_status, _ThemeColors.warn())
-            self._radio_project.setEnabled(True)
 
         # Export default
         if not self.exportPathEdit.text():
@@ -1221,7 +1142,6 @@ class PoleAerienDialogV2(QDialog):
         self._det_summary.setVisible(False)
         self._sro_value.clear()
         self._sro_status.setText("")
-        self._radio_project.setEnabled(False)
         for row in self._module_rows.values():
             row.set_detected(False)
         self._update_mod_count()
@@ -1268,10 +1188,10 @@ class PoleAerienDialogV2(QDialog):
         if not has_mod:
             reasons.append("Aucun module selectionne")
 
-        sro_ok = True
-        if self._project_mode and not self._detection.sro:
-            reasons.append("SRO requis en mode Projet")
-            sro_ok = False
+        # SRO obligatoire en mode ST-AIR
+        sro_ok = bool(self._detection.sro)
+        if not sro_ok:
+            reasons.append("SRO requis (saisir ou detecter via le nom de dossier)")
 
         export_dir = self.exportPathEdit.text() or self._detection.export_dir
         export_ok = bool(export_dir) and os.path.isdir(export_dir)
@@ -1280,21 +1200,20 @@ class PoleAerienDialogV2(QDialog):
 
         layers_ok = True
         missing_layers = []
-        if not self._project_mode:
-            if not self.comboInfraPtPot.currentLayer():
-                missing_layers.append("infra_pt_pot")
-            if not self.comboEtudeCapFt.currentLayer():
-                missing_layers.append("etude_cap_ft")
-            if not self.comboEtudeComac.currentLayer():
-                missing_layers.append("etude_comac")
-            if missing_layers:
-                layers_ok = False
-                reasons.append(
-                    f"Couche(s) manquante(s) : {', '.join(missing_layers)}"
-                )
+        if not self.comboInfraPtPot.currentLayer():
+            missing_layers.append("infra_pt_pot")
+        if not self.comboEtudeCapFt.currentLayer():
+            missing_layers.append("etude_cap_ft")
+        if not self.comboEtudeComac.currentLayer():
+            missing_layers.append("etude_comac")
+        if missing_layers:
+            layers_ok = False
+            reasons.append(
+                f"Couche(s) manquante(s) : {', '.join(missing_layers)}"
+            )
 
-        # CRS mismatch warning (mode QGIS only, non-blocking)
-        if not self._project_mode and layers_ok:
+        # CRS mismatch warning (non-blocking)
+        if layers_ok:
             crs_set = set()
             for combo in (self.comboInfraPtPot, self.comboEtudeCapFt,
                           self.comboEtudeComac):
@@ -1307,7 +1226,7 @@ class PoleAerienDialogV2(QDialog):
                 )
 
         sel_count = sum(1 for r in self._module_rows.values() if r.is_selected)
-        mode_label = "Projet (BDD)" if self._project_mode else "Couches QGIS"
+        mode_label = "Couches QGIS"
 
         ready = (has_proj and has_mod and sro_ok and layers_ok
                  and not self._is_running)
@@ -1340,14 +1259,8 @@ class PoleAerienDialogV2(QDialog):
         if state['ready']:
             txt = (f"Pret : {state['selected_count']}/{state['total_count']} "
                    f"module(s) | {state['mode']}")
-            if self._project_mode:
-                src = self._sro_source or '?'
-                txt += f" | SRO {src}"
-                if self._chk_load_layers.isChecked():
-                    txt += " | Charger couches"
-                tol = self._spin_spatial_tol.value()
-                if tol != 7.5:
-                    txt += f" | Rayon {tol}m"
+            src = self._sro_source or '?'
+            txt += f" | SRO {src}"
             if not state['export_ok']:
                 txt += " | Export: defaut projet"
             self._readiness_label.setText(txt)
@@ -1385,9 +1298,6 @@ class PoleAerienDialogV2(QDialog):
 
     def _update_layers_status(self, state):
         """Update the inline layers status label (UI-007)."""
-        if self._project_mode:
-            self._layers_status.setVisible(False)
-            return
         if not state['has_project']:
             self._layers_status.setVisible(False)
             return
@@ -1450,11 +1360,7 @@ class PoleAerienDialogV2(QDialog):
         self.deselectAllBtn.setEnabled(not running)
         self._chk_comac_drawings.setEnabled(not running)
         self._chk_data_dictionary.setEnabled(not running)
-        self._radio_qgis.setEnabled(not running)
-        self._radio_project.setEnabled(not running)
         self._sro_value.setReadOnly(running)
-        self._chk_load_layers.setEnabled(not running)
-        self._spin_spatial_tol.setEnabled(not running)
         self.refreshBtn.setEnabled(not running)
 
         for row in self._module_rows.values():
@@ -1492,11 +1398,7 @@ class PoleAerienDialogV2(QDialog):
         self.deselectAllBtn.setEnabled(True)
         self._chk_comac_drawings.setEnabled(True)
         self._chk_data_dictionary.setEnabled(True)
-        self._radio_qgis.setEnabled(True)
-        self._radio_project.setEnabled(True)
         self._sro_value.setReadOnly(False)
-        self._chk_load_layers.setEnabled(True)
-        self._spin_spatial_tol.setEnabled(True)
         self.refreshBtn.setEnabled(True)
         for row in self._module_rows.values():
             row.checkbox.setEnabled(row._found)
@@ -1584,58 +1486,36 @@ class PoleAerienDialogV2(QDialog):
         self._log_info("")
         self._log_info("<b>--- Environnement QGIS ---</b>")
 
-        mode_label = "Projet (PostgreSQL)" if self._project_mode else "Couches QGIS (manuel)"
-        self._log_dim(f"  Mode : {mode_label}")
+        self._log_dim("  Mode : Couches QGIS (ST-AIR, 100% local)")
+        pg_ok = False  # plus de connexion PG en mode sous-traitant
 
-        # PostgreSQL
-        pg_ok = False
-        if self._project_mode:
-            try:
-                from .db_connection import get_shared_connection
-                db = get_shared_connection()
-                conn_name = db.find_auvergne_connection()
-                if conn_name and db.connect():
-                    self._log_ok(f"  PostgreSQL : OK ({conn_name})")
-                    pg_ok = True
-                elif conn_name:
-                    self._log_warn(f"  PostgreSQL : connexion '{conn_name}' trouvee mais echec")
+        # QGIS layers - check selected layers
+        layer_checks = [
+            (self.comboInfraPtPot.currentLayer(), 'infra_pt_pot',
+             'Poteaux (Point)'),
+            (self.comboEtudeCapFt.currentLayer(), 'etude_cap_ft',
+             'Zonage CAP FT (Polygone)'),
+            (self.comboEtudeComac.currentLayer(), 'etude_comac',
+             'Zonage COMAC (Polygone)'),
+        ]
+        crs_set = set()
+        for lyr, key, desc in layer_checks:
+            if lyr:
+                fc = lyr.featureCount()
+                crs = lyr.crs().authid() if lyr.crs().isValid() else '?'
+                crs_set.add(crs)
+                if fc > 0:
+                    self._log_ok(
+                        f"  {key} : {lyr.name()} ({fc:,} entites, {crs})")
                 else:
-                    self._log_warn("  PostgreSQL : aucune connexion 'Auvergne' configuree")
-            except Exception as exc:
-                self._log_warn(f"  PostgreSQL : erreur ({exc})")
-
-            if pg_ok:
-                self._log_dim("  Couches : chargement automatique via SRO")
+                    self._log_warn(
+                        f"  {key} : {lyr.name()} (VIDE - 0 entite)")
             else:
-                self._log_warn("  Couches : chargement impossible sans connexion PG")
-        else:
-            # QGIS layers mode - check selected layers
-            layer_checks = [
-                (self.comboInfraPtPot.currentLayer(), 'infra_pt_pot',
-                 'Poteaux (Point)'),
-                (self.comboEtudeCapFt.currentLayer(), 'etude_cap_ft',
-                 'Zonage CAP FT (Polygone)'),
-                (self.comboEtudeComac.currentLayer(), 'etude_comac',
-                 'Zonage COMAC (Polygone)'),
-            ]
-            crs_set = set()
-            for lyr, key, desc in layer_checks:
-                if lyr:
-                    fc = lyr.featureCount()
-                    crs = lyr.crs().authid() if lyr.crs().isValid() else '?'
-                    crs_set.add(crs)
-                    if fc > 0:
-                        self._log_ok(
-                            f"  {key} : {lyr.name()} ({fc:,} entites, {crs})")
-                    else:
-                        self._log_warn(
-                            f"  {key} : {lyr.name()} (VIDE - 0 entite)")
-                else:
-                    self._log_warn(f"  {key} : non selectionnee ({desc})")
+                self._log_warn(f"  {key} : non selectionnee ({desc})")
 
-            if len(crs_set) > 1:
-                self._log_warn(
-                    f"  CRS : heterogenes ({', '.join(crs_set)}) - detail dans Qualite donnees")
+        if len(crs_set) > 1:
+            self._log_warn(
+                f"  CRS : heterogenes ({', '.join(crs_set)}) - detail dans Qualite donnees")
 
         # Export
         export_dir = self.exportPathEdit.text() or d.export_dir
@@ -1660,18 +1540,9 @@ class PoleAerienDialogV2(QDialog):
         from .preflight_checks import run_data_quality_checks, format_check_log
         from .qgis_utils import detect_etude_field as _detect_etude_field
 
-        if not self._project_mode:
-            _lyr_pot_dq = self.comboInfraPtPot.currentLayer()
-            _lyr_cap_dq = self.comboEtudeCapFt.currentLayer()
-            _lyr_com_dq = self.comboEtudeComac.currentLayer()
-        else:
-            _lyr_pot_dq = None
-            _lyr_cap_dq = None
-            _lyr_com_dq = None
-            self._log_dim(
-                "  Mode Projet: verifications couches (PF-01..PF-05) "
-                "executees automatiquement au lancement du batch"
-            )
+        _lyr_pot_dq = self.comboInfraPtPot.currentLayer()
+        _lyr_cap_dq = self.comboEtudeCapFt.currentLayer()
+        _lyr_com_dq = self.comboEtudeComac.currentLayer()
 
         _be_type_dq = 'axione' if d.has_gracethd else 'nge'
         if not d.has_gracethd and d.sro:
@@ -1857,20 +1728,15 @@ class PoleAerienDialogV2(QDialog):
                 recos.append(
                     f"C6-C3A-C7-BD : ajouter les annexes "
                     f"{' et '.join(missing)}")
-        if self._project_mode and not pg_ok:
+        any_missing = not all([
+            self.comboInfraPtPot.currentLayer(),
+            self.comboEtudeCapFt.currentLayer(),
+            self.comboEtudeComac.currentLayer(),
+        ])
+        if any_missing:
             recos.append(
-                'Mode Projet : configurer la connexion PostgreSQL '
-                'Auvergne dans QGIS > Parametres > PostgreSQL')
-        if not self._project_mode:
-            any_missing = not all([
-                self.comboInfraPtPot.currentLayer(),
-                self.comboEtudeCapFt.currentLayer(),
-                self.comboEtudeComac.currentLayer(),
-            ])
-            if any_missing:
-                recos.append(
-                    'Mode Couches : selectionner les 3 couches QGIS '
-                    '(poteaux, zonage CAP FT, zonage COMAC)')
+                'Couches QGIS : selectionner les 3 couches '
+                '(infra_pt_pot, etude_cap_ft, etude_comac)')
         return recos
 
     # ==================================================================
@@ -1947,13 +1813,13 @@ class PoleAerienDialogV2(QDialog):
 
     @property
     def is_project_mode(self):
-        """True when 'Mode Projet (BDD)' is selected."""
-        return self._project_mode
+        """ST-AIR : toujours False, pas de mode Projet BDD."""
+        return False
 
     @property
     def load_layers_in_qgis(self):
-        """True when user wants DB layers added to the QGIS project."""
-        return self._project_mode and self._chk_load_layers.isChecked()
+        """ST-AIR : toujours False (pas de chargement BDD)."""
+        return False
 
     @property
     def include_comac_drawings(self):
@@ -1965,8 +1831,8 @@ class PoleAerienDialogV2(QDialog):
 
     @property
     def spatial_tolerance(self):
-        """Spatial matching tolerance in meters (from spinbox)."""
-        return self._spin_spatial_tol.value()
+        """Spatial matching tolerance (m) - ST-AIR utilise la valeur par defaut."""
+        return 7.5
 
     @property
     def sro(self):
@@ -1987,18 +1853,18 @@ class PoleAerienDialogV2(QDialog):
             geom = layer.geometryType() if hasattr(layer, 'geometryType') else -1
 
             # infra_pt_pot: Point layers only
-            if 'infra_pt_pot' in name and geom == 0:  # QgsWkbTypes.PointGeometry
+            if 'infra_pt_pot' in name and geom == GEOM_POINT:
                 best_pot = (layer, 1)
 
             # etude_cap_ft: Polygon layers, prefer exact match
-            if geom == 2:  # QgsWkbTypes.PolygonGeometry
+            if geom == GEOM_POLYGON:
                 if 'etude_cap_ft' in name:
                     best_cap = (layer, 3)
                 elif ('cap_ft' in name or 'capft' in name) and best_cap[1] < 2:
                     best_cap = (layer, 2)
 
             # etude_comac: Polygon layers, prefer exact match
-            if geom == 2:
+            if geom == GEOM_POLYGON:
                 if 'etude_comac' in name:
                     best_com = (layer, 3)
                 elif 'comac' in name and best_com[1] < 2:

@@ -14,6 +14,9 @@ from qgis.core import (
 from .db_connection import CableSegment
 from .compat import MSG_INFO, MSG_WARNING
 
+_RE_CABLE_CAPACITE = re.compile(r'([A-Z]{1,3}\d*\.?\d*)-(\d+)P', re.IGNORECASE)
+_RE_CABLE_CAPACITE_SIMPLE = re.compile(r'-(\d+)P', re.IGNORECASE)
+
 
 def _safe_attr_text(feature, idx):
     if idx < 0:
@@ -206,25 +209,18 @@ class CableAnalyzer:
             return []
         
         references = []
-        
-        # Pattern: Lxxx.xx-xxP ou similaire
-        # Exemples: L192.11-26P, L193.12-6P, CB-12P
-        pattern = r'([A-Z]{1,3}\d*\.?\d*)-(\d+)P'
-        
-        matches = re.findall(pattern, nom_cable, re.IGNORECASE)
-        
+
+        matches = _RE_CABLE_CAPACITE.findall(nom_cable)
+
         for ref, capa in matches:
             references.append({
                 'reference': ref,
                 'capacite': int(capa),
                 'raw': f"{ref}-{capa}P"
             })
-        
-        # Si aucun match, essayer un pattern plus simple
+
         if not references:
-            # Pattern: juste -xxP pour extraire les capacités
-            simple_pattern = r'-(\d+)P'
-            simple_matches = re.findall(simple_pattern, nom_cable, re.IGNORECASE)
+            simple_matches = _RE_CABLE_CAPACITE_SIMPLE.findall(nom_cable)
             for idx, capa in enumerate(simple_matches):
                 references.append({
                     'reference': f"REF{idx+1}",

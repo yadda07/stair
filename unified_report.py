@@ -16,6 +16,7 @@ from io import BytesIO
 from datetime import datetime
 
 import openpyxl
+from .core_utils import normalize_appui_num as _normalize
 from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -495,12 +496,15 @@ def _checks_comac(r):
         if cables_only:
             ok_c = sum(1 for e in cables_only if e.get('statut') == 'OK')
             ecart_c = sum(1 for e in cables_only if e.get('statut') == 'ECART')
+            pep_c = sum(1 for e in cables_only if e.get('statut') == 'ECART_PEP')
             absent_c = sum(1 for e in cables_only if e.get('statut', '').startswith('ABSENT') and not e.get('statut', '').endswith('_NON_RESOLU') and not e.get('statut', '').endswith('_HORS_PERIMETRE'))
             nr_c = sum(1 for e in cables_only if e.get('statut', '').endswith('_NON_RESOLU'))
             hp_c = sum(1 for e in cables_only if e.get('statut', '').endswith('_HORS_PERIMETRE'))
             nok_c = ecart_c + absent_c + nr_c + hp_c
-            checks.append(("Verif cables COMAC vs BDD", ok_c, nok_c,
-                            f"{ok_c} OK, {ecart_c} ecarts, {absent_c} absents, {nr_c} non resolus, {hp_c} hors perimetre"))
+            detail = f"{ok_c} OK, {ecart_c} ecarts, {absent_c} absents, {nr_c} non resolus, {hp_c} hors perimetre"
+            if pep_c:
+                detail += f", {pep_c} ecarts PEP"
+            checks.append(("Verif cables COMAC vs BDD", ok_c, nok_c, detail))
     dico_boitier = r.get('dico_boitier_comac', {})
     verif_boitiers = r.get('verif_boitiers')
     if dico_boitier:
@@ -983,9 +987,9 @@ def write_comac(wb, result, report_options):
     if verif_cables:
         ws = wb.create_sheet("COMAC_CABLES")
         has_boitier = any(e.get('boitier_comac') for e in verif_cables)
-        hdrs = ["APPUI", "NB COMAC", "REFS COMAC", "CAPAS COMAC",
+        hdrs = ["APPUI", "NOM ETUDE", "NB COMAC", "REFS COMAC", "CAPAS COMAC",
                 "NB BDD", "CAPAS BDD", "STATUT", "MESSAGE"]
-        widths = [20, 12, 40, 25, 12, 25, 14, 55]
+        widths = [20, 30, 12, 40, 25, 12, 25, 14, 55]
         if has_boitier:
             hdrs.extend(["BOITIER COMAC", "BPE TYPE", "BOITIER STATUT"])
             widths.extend([15, 15, 15])
@@ -994,7 +998,8 @@ def write_comac(wb, result, report_options):
         for e in verif_cables:
             st = e.get('statut', '')
             vals = [
-                e.get('num_appui', ''), e.get('nb_cables_comac', 0),
+                e.get('num_appui', ''), e.get('nom_etude', ''),
+                e.get('nb_cables_comac', 0),
                 e.get('cables_comac', ''),
                 '+'.join(e.get('capas_comac', [])),
                 e.get('nb_cables_bdd', 0),
@@ -1005,16 +1010,17 @@ def write_comac(wb, result, report_options):
                     e.get('boitier_comac', ''),
                     e.get('bpe_noe_type', ''),
                     e.get('boitier_statut', '')])
-            fill = _P_OK if st == 'OK' else (_P_CRIT if st == 'ECART' else (
-                _P_WARN if st.startswith('ABSENT') else None))
+            fill = _P_OK if st == 'OK' else (
+                _P_CRIT if st == 'ECART' else (
+                _P_WARN if (st == 'ECART_PEP' or st.startswith('ABSENT')) else None))
             _row(ws, r, vals, fill=fill)
             if has_boitier:
                 bst = e.get('boitier_statut', '')
                 if bst == 'ERREUR':
-                    for c in range(9, 12):
+                    for c in range(10, 13):
                         ws.cell(row=r, column=c).fill = _P_CRIT
                 elif bst == 'OK':
-                    for c in range(9, 12):
+                    for c in range(10, 13):
                         ws.cell(row=r, column=c).fill = _P_OK
             r += 1
 
@@ -1267,14 +1273,17 @@ def write_gespot_c6(wb: openpyxl.Workbook, result: dict) -> None:
     absent_gespot = result.get('absent_gespot', [])
     anomalies = result.get('anomalies', [])
 
+    etude_map = result.get('etude_map') or None
+
     _write_gespot_analyse(wb, comparisons)
-    _write_gespot_absent_c6(wb, absent_c6)
-    _write_gespot_absent_gespot(wb, absent_gespot)
+    _write_gespot_absent_c6(wb, absent_c6, etude_map)
+    _write_gespot_absent_gespot(wb, absent_gespot, etude_map)
     _write_gespot_anomalies(wb, anomalies)
 
 
 def _write_gespot_analyse(wb, comparisons):
     ws = wb.create_sheet('GESPOT_ANALYSE')
+    has_etude = any(c.etude for c in comparisons)
     headers = [
         'NUM', 'VOIE', 'ADRESSE_C6', 'STATUT_ADRESSE', 'DETAIL_ADRESSE',
         'CENTRE_GESPOT', 'CENTRE_C6', 'STATUT_CENTRE', 'DETAIL_CENTRE',
@@ -1289,6 +1298,8 @@ def _write_gespot_analyse(wb, comparisons):
         'CTRL_VIS_GESPOT', 'CTRL_VIS_C6', 'STATUT_CTRL_VIS', 'DETAIL_CTRL_VIS',
         'NB_KO', 'STATUT_GLOBAL', 'SOURCE_GESPOT', 'SOURCE_C6',
     ]
+    if has_etude:
+        headers.insert(1, 'ETUDE')
     statut_cols = {i + 1 for i, h in enumerate(headers) if h.startswith('STATUT_')}
     fills = {'OK': _P_OK, 'KO': _P_ERR}
 
@@ -1300,8 +1311,11 @@ def _write_gespot_analyse(wb, comparisons):
     nb_ko_col = headers.index('NB_KO') + 1
 
     for row_idx, cmp in enumerate(comparisons, 2):
-        values = [
-            cmp.num, cmp.voie_gespot, cmp.adresse_c6, cmp.statut_adresse, cmp.detail_adresse,
+        values = [cmp.num]
+        if has_etude:
+            values.append(cmp.etude)
+        values.extend([
+            cmp.voie_gespot, cmp.adresse_c6, cmp.statut_adresse, cmp.detail_adresse,
             cmp.centre_gespot, cmp.centre_c6, cmp.statut_centre, cmp.detail_centre,
             cmp.type_gespot, cmp.type_c6, cmp.statut_type, cmp.detail_type,
             cmp.strat_gespot, cmp.strat_c6, cmp.statut_strat, cmp.detail_strat,
@@ -1313,7 +1327,7 @@ def _write_gespot_analyse(wb, comparisons):
             cmp.usable_gespot, cmp.usable_c6, cmp.statut_usable, cmp.detail_usable,
             cmp.ctrl_vis_gespot, cmp.ctrl_vis_c6, cmp.statut_ctrl_vis, cmp.detail_ctrl_vis,
             cmp.nb_ecarts, cmp.statut_global, cmp.source_gespot, cmp.source_c6,
-        ]
+        ])
         for col_idx, val in enumerate(values, 1):
             c = ws.cell(row=row_idx, column=col_idx, value=val)
             c.font = _F_DATA
@@ -1324,33 +1338,47 @@ def _write_gespot_analyse(wb, comparisons):
     ws.freeze_panes = 'A2'
 
 
-def _write_gespot_absent_c6(wb, records):
+def _write_gespot_absent_c6(wb, records, etude_map=None):
     ws = wb.create_sheet('GESPOT_ABSENT_C6')
+    _emap = etude_map or {}
+    has_etude = bool(_emap)
     headers = ['NUM', 'VOIE', 'CENTRE', 'TYPE_GESPOT', 'STRAT_GESPOT',
                'ENV_GESPOT', 'ELEC_GESPOT', 'INACC_GESPOT', 'SOURCE_GESPOT']
+    if has_etude:
+        headers.insert(1, 'ETUDE')
     for col_idx, h in enumerate(headers, 1):
         c = ws.cell(row=1, column=col_idx, value=h)
         c.fill = _P_HEAD
         c.font = _F_HEAD
     for row_idx, r in enumerate(records, 2):
-        row = [r.num, r.voie, r.centre, r.type_calc, r.strategie_calc,
-               r.milieu_calc, r.pres_elect_calc, r.inacc_calc, r.source_file]
+        row = [r.num]
+        if has_etude:
+            row.append(_emap.get(_normalize(r.num), ''))
+        row.extend([r.voie, r.centre, r.type_calc, r.strategie_calc,
+                    r.milieu_calc, r.pres_elect_calc, r.inacc_calc, r.source_file])
         for col_idx, val in enumerate(row, 1):
             ws.cell(row=row_idx, column=col_idx, value=val).font = _F_DATA
     ws.freeze_panes = 'A2'
 
 
-def _write_gespot_absent_gespot(wb, records):
+def _write_gespot_absent_gespot(wb, records, etude_map=None):
     ws = wb.create_sheet('GESPOT_ABSENT_GESPOT')
+    _emap = etude_map or {}
+    has_etude = bool(_emap)
     headers = ['NUM', 'ADRESSE_C6', 'CENTRE_C6', 'TYPE_C6', 'STRAT_C6',
                'ENV_C6', 'ELEC_C6', 'INACC_C6', 'SOURCE_C6']
+    if has_etude:
+        headers.insert(1, 'ETUDE')
     for col_idx, h in enumerate(headers, 1):
         c = ws.cell(row=1, column=col_idx, value=h)
         c.fill = _P_HEAD
         c.font = _F_HEAD
     for row_idx, r in enumerate(records, 2):
-        row = [r.num, r.adresse, r.centre, r.type_c6, r.strat,
-               r.env, r.elec, r.inacc, r.source_file]
+        row = [r.num]
+        if has_etude:
+            row.append(_emap.get(_normalize(r.num), ''))
+        row.extend([r.adresse, r.centre, r.type_c6, r.strat,
+                    r.env, r.elec, r.inacc, r.source_file])
         for col_idx, val in enumerate(row, 1):
             ws.cell(row=row_idx, column=col_idx, value=val).font = _F_DATA
     ws.freeze_panes = 'A2'

@@ -11,11 +11,17 @@ Zéro dépendance QGIS - thread-safe.
 
 import os
 import re as _re
+import warnings
+import xml.etree.ElementTree as _ET
+import zipfile as _zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import openpyxl
+
+warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+warnings.filterwarnings("ignore", category=ResourceWarning, module="openpyxl")
 
 from .core_utils import is_plugin_output_file, normalize_appui_num
 from .gespot_reader import GespotRecord, GespotLoadResult
@@ -146,6 +152,8 @@ class ComparisonResult:
     source_gespot: str
     source_c6: str
 
+    etude: str = ''
+
 
 @dataclass
 class C6LoadResult:
@@ -153,6 +161,8 @@ class C6LoadResult:
     records: Dict[str, C6Record] = field(default_factory=dict)
     whitelist: set = field(default_factory=set)
     anomalies: List[dict] = field(default_factory=list)
+    files_read: int = 0
+    files_skipped: int = 0
 
 
 @dataclass
@@ -163,6 +173,10 @@ class GespotC6Result:
     absent_gespot: List[C6Record] = field(default_factory=list)
     anomalies: List[dict] = field(default_factory=list)
     output_path: str = ''
+    gespot_file_counts: Dict[str, int] = field(default_factory=dict)
+    c6_files_read: int = 0
+    c6_files_skipped: int = 0
+    etude_map: Dict[str, str] = field(default_factory=dict)
 
 
 # ===========================================================================
@@ -196,10 +210,51 @@ def _read_whitelist(wb: openpyxl.Workbook) -> set:
     return whitelist
 
 
+def _validate_xlsx_zip(filepath: str) -> Optional[str]:
+    """Pre-valide la structure ZIP/XML d'un .xlsx avant openpyxl.
+
+    Retourne un message d'erreur si invalide, None si OK.
+    Objectif : intercepter les fichiers corrompus en Python pur
+    avant que le parser C (lxml/libxml2) ne provoque un segfault.
+    """
+    try:
+        with _zipfile.ZipFile(filepath, 'r') as zf:
+            bad = zf.testzip()
+            if bad:
+                return f"Archive ZIP corrompue (entree: {bad})"
+            if '[Content_Types].xml' not in zf.namelist():
+                return "Manifest [Content_Types].xml absent"
+            src = zf.read('[Content_Types].xml')
+            _ET.fromstring(src)
+    except _zipfile.BadZipFile:
+        return "Fichier non reconnu comme archive ZIP/Excel valide"
+    except _ET.ParseError as exc:
+        return f"XML manifest corrompu: {exc}"
+    except OSError as exc:
+        return f"Erreur lecture: {exc}"
+    return None
+
+
 def _read_one_c6(filepath: str,
                  fname: str) -> Tuple[Optional[dict], set, List[dict]]:
     """Lit un fichier C6 Excel. Retourne (records_dict, whitelist, anomalies)."""
     anomalies = []
+
+    zip_err = _validate_xlsx_zip(filepath)
+    if zip_err:
+        anomalies.append({
+            'source': 'C6', 'fichier': fname, 'num': '',
+            'type': 'FICHIER_IGNORE',
+            'detail': (
+                f"Le fichier C6 '{fname}' a echoue la pre-validation: {zip_err}"
+            ),
+            'action': (
+                f"Ouvrir '{fname}' dans Excel pour verifier qu'il n'est pas "
+                f"corrompu, puis relancer"
+            ),
+        })
+        return None, set(), anomalies
+
     try:
         wb = openpyxl.load_workbook(filepath, data_only=True)
     except Exception as e:
@@ -309,7 +364,9 @@ def load_c6_dir(c6_dir: str) -> C6LoadResult:
             result.anomalies.extend(anoms)
             result.whitelist |= wl
             if records is None:
+                result.files_skipped += 1
                 continue
+            result.files_read += 1
             for num_key, rec in records.items():
                 if num_key in seen_nums:
                     _handle_c6_dup(num_key, rec, seen_nums[num_key],
@@ -462,19 +519,29 @@ def _compare_one(gespot: GespotRecord, c6: C6Record) -> ComparisonResult:
 
 
 def compare(gespot_result: GespotLoadResult,
-            c6_result: C6LoadResult) -> GespotC6Result:
-    """Effectue la jointure et la comparaison champ par champ."""
+            c6_result: C6LoadResult,
+            etude_map: Optional[Dict[str, str]] = None) -> GespotC6Result:
+    """Effectue la jointure et la comparaison champ par champ.
+
+    Args:
+        etude_map: {normalized_inf_num: etude_name ou 'HORS ETUDE'}.
+            Si fourni, chaque resultat de comparaison est annote avec le nom
+            de l'etude ou 'HORS ETUDE'.
+    """
     out = GespotC6Result()
     out.anomalies.extend(gespot_result.anomalies)
     out.anomalies.extend(c6_result.anomalies)
+    if etude_map:
+        out.etude_map = etude_map
 
     gespot_keys = set(gespot_result.records)
     c6_keys = set(c6_result.records)
+    _emap = etude_map or {}
 
     for num in sorted(gespot_keys & c6_keys):
-        out.comparisons.append(
-            _compare_one(gespot_result.records[num], c6_result.records[num])
-        )
+        cmp = _compare_one(gespot_result.records[num], c6_result.records[num])
+        cmp.etude = _emap.get(num, '')
+        out.comparisons.append(cmp)
 
     for num in sorted(gespot_keys - c6_keys):
         out.absent_c6.append(gespot_result.records[num])
@@ -483,6 +550,167 @@ def compare(gespot_result: GespotLoadResult,
         out.absent_gespot.append(c6_result.records[num])
 
     return out
+
+
+def _append_global_diagnostics(result: GespotC6Result,
+                               gespot_result: GespotLoadResult,
+                               c6_result: C6LoadResult) -> None:
+    """Ajoute un diagnostic global si aucune jointure exploitable n'existe."""
+    gs_count = len(gespot_result.records)
+    c6_count = len(c6_result.records)
+
+    if gs_count == 0 and result.gespot_file_counts:
+        result.anomalies.append({
+            'source': 'GESPOT', 'fichier': '', 'num': '',
+            'type': 'AUCUN_APPUI_GESPOT',
+            'detail': (
+                f"{len(result.gespot_file_counts)} fichier(s) CSV GESPOT ont ete lus, "
+                "mais aucun appui exploitable n'a pu etre extrait"
+            ),
+            'action': (
+                "Verifier que les CSV GESPOT contiennent bien des numeros d'appui dans "
+                "le format attendu, puis relancer"
+            ),
+        })
+        return
+
+    if c6_count == 0 and c6_result.files_read:
+        result.anomalies.append({
+            'source': 'C6', 'fichier': '', 'num': '',
+            'type': 'AUCUN_APPUI_C6',
+            'detail': (
+                f"{c6_result.files_read} fichier(s) Excel C6 ont ete lus, mais aucun "
+                "appui exploitable n'a pu etre extrait"
+            ),
+            'action': (
+                "Verifier que les exports C6 contiennent bien des numeros d'appui dans "
+                "l'onglet 'Export 1', puis relancer"
+            ),
+        })
+        return
+
+    if result.comparisons or gs_count == 0 or c6_count == 0:
+        return
+
+    result.anomalies.append({
+        'source': 'GESPOT/C6', 'fichier': '', 'num': '',
+        'type': 'AUCUNE_JOINTURE_NUM',
+        'detail': (
+            f"Aucune correspondance de numero d'appui n'a ete trouvee entre les "
+            f"{gs_count} appuis GESPOT et les {c6_count} appuis C6"
+        ),
+        'action': (
+            "Ouvrir les feuilles ABSENT_C6 et ABSENT_GESPOT, comparer quelques NUM, "
+            "verifier qu'il s'agit bien de la meme etude et que le format des numeros "
+            "d'appui est coherent entre les deux sources"
+        ),
+    })
+
+
+def _build_analyse_note(result: GespotC6Result) -> str:
+    """Retourne une note visible a afficher en tete de l'onglet ANALYSE."""
+    if result.comparisons:
+        return ''
+
+    gs_count = len(result.comparisons) + len(result.absent_c6)
+    c6_count = len(result.comparisons) + len(result.absent_gespot)
+    if gs_count and c6_count:
+        return (
+            "Aucune correspondance GESPOT/C6. Voir ABSENT_C6, ABSENT_GESPOT "
+            "et ANOMALIES_SOURCE."
+        )
+    if gs_count == 0 and c6_count:
+        return "Aucun appui GESPOT exploitable. Voir ANOMALIES_SOURCE."
+    if c6_count == 0 and gs_count:
+        return "Aucun appui C6 exploitable. Voir ANOMALIES_SOURCE."
+    return "Aucune donnee exploitable. Voir ANOMALIES_SOURCE."
+
+
+# ===========================================================================
+#  EXPORT EXCEL - helpers
+# ===========================================================================
+
+def _fills():
+    from openpyxl.styles import PatternFill
+    return {
+        'OK': PatternFill('solid', fgColor='C6EFCE'),
+        'KO': PatternFill('solid', fgColor='FFC7CE'),
+    }
+
+
+def _hdr_fill():
+    from openpyxl.styles import PatternFill
+    return PatternFill('solid', fgColor='D9D9D9')
+
+
+def _write_sheet_header(ws, headers: List[str]) -> None:
+    from openpyxl.styles import Font
+    hfill = _hdr_fill()
+    hfont = Font(bold=True)
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.fill = hfill
+        cell.font = hfont
+
+
+def _auto_widths(ws, max_width: int = 50) -> None:
+    from openpyxl.utils import get_column_letter
+    for col in ws.columns:
+        width = max(
+            (len(str(cell.value or '')) for cell in col),
+            default=10,
+        )
+        ws.column_dimensions[get_column_letter(col[0].column)].width = min(
+            width + 2, max_width
+        )
+
+
+def _write_absent_c6(wb: openpyxl.Workbook,
+                     records: List[GespotRecord],
+                     etude_map: Optional[Dict[str, str]] = None) -> None:
+    ws = wb.create_sheet('ABSENT_C6')
+    headers = ['NUM', 'ETUDE', 'VOIE', 'NUM_VOIE', 'CENTRE', 'TYPE_GESPOT',
+               'STRAT_GESPOT', 'ENV_GESPOT', 'ELEC_GESPOT',
+               'INACC_GESPOT', 'RECALAGE', 'DIST_ELEC', 'SOURCE_GESPOT']
+    _write_sheet_header(ws, headers)
+    _emap = etude_map or {}
+    for r in records:
+        etude = _emap.get(normalize_appui_num(r.num), '')
+        ws.append([r.num, etude, r.voie, r.num_voie, r.centre, r.type_calc,
+                   r.strategie_calc, r.milieu_calc, r.pres_elect_calc,
+                   r.inacc_calc, r.recalage_raw, r.dist_elec, r.source_file])
+    ws.freeze_panes = 'A2'
+    _auto_widths(ws)
+
+
+def _write_absent_gespot(wb: openpyxl.Workbook,
+                         records: List[C6Record],
+                         etude_map: Optional[Dict[str, str]] = None) -> None:
+    ws = wb.create_sheet('ABSENT_GESPOT')
+    headers = ['NUM', 'ETUDE', 'ADRESSE_C6', 'CENTRE_C6', 'TYPE_C6', 'STRAT_C6',
+               'ENV_C6', 'ELEC_C6', 'INACC_C6', 'VERTIC_C6', 'SOURCE_C6']
+    _write_sheet_header(ws, headers)
+    _emap = etude_map or {}
+    for r in records:
+        etude = _emap.get(normalize_appui_num(r.num), '')
+        ws.append([r.num, etude, r.adresse, r.centre, r.type_c6, r.strat,
+                   r.env, r.elec, r.inacc, r.vertic, r.source_file])
+    ws.freeze_panes = 'A2'
+    _auto_widths(ws)
+
+
+def _write_anomalies(wb: openpyxl.Workbook,
+                     anomalies: List[dict]) -> None:
+    ws = wb.create_sheet('ANOMALIES_SOURCE')
+    headers = ['SOURCE', 'FICHIER_CONCERNE', 'APPUI_CONCERNE', 'CODE_ANOMALIE',
+               'EXPLICATION', 'ACTION_A_REALISER']
+    _write_sheet_header(ws, headers)
+    for a in anomalies:
+        ws.append([a.get('source', ''), a.get('fichier', ''),
+                   a.get('num', ''), a.get('type', ''),
+                   a.get('detail', ''), a.get('action', '')])
+    ws.freeze_panes = 'A2'
+    _auto_widths(ws)
 
 
 # ===========================================================================
@@ -498,9 +726,10 @@ def export_to_excel(result: GespotC6Result, export_dir: str) -> str:
     filepath = os.path.join(export_dir, f'GESPOT_C6_ANALYSE_{ts}.xlsx')
     wb = openpyxl.Workbook()
 
-    _write_analyse(wb, result.comparisons)
-    _write_absent_c6(wb, result.absent_c6)
-    _write_absent_gespot(wb, result.absent_gespot)
+    _emap = result.etude_map or None
+    _write_analyse(wb, result.comparisons, _build_analyse_note(result))
+    _write_absent_c6(wb, result.absent_c6, _emap)
+    _write_absent_gespot(wb, result.absent_gespot, _emap)
     _write_anomalies(wb, result.anomalies)
 
     if 'Sheet' in wb.sheetnames:
@@ -518,22 +747,11 @@ def export_to_excel(result: GespotC6Result, export_dir: str) -> str:
     return filepath
 
 
-def _fills():
-    from openpyxl.styles import PatternFill
-    return {
-        'OK': PatternFill('solid', fgColor='C6EFCE'),
-        'KO': PatternFill('solid', fgColor='FFC7CE'),
-    }
-
-
-def _hdr_fill():
-    from openpyxl.styles import PatternFill
-    return PatternFill('solid', fgColor='D9D9D9')
-
-
 def _write_analyse(wb: openpyxl.Workbook,
-                   comparisons: List[ComparisonResult]) -> None:
+                   comparisons: List[ComparisonResult],
+                   note: str = '') -> None:
     ws = wb.create_sheet('ANALYSE')
+    has_etude = any(c.etude for c in comparisons)
     headers = [
         'NUM', 'VOIE', 'NUM_VOIE', 'ADRESSE_C6', 'STATUT_ADRESSE', 'DETAIL_ADRESSE',
         'CENTRE_GESPOT', 'CENTRE_C6', 'STATUT_CENTRE', 'DETAIL_CENTRE',
@@ -548,6 +766,8 @@ def _write_analyse(wb: openpyxl.Workbook,
         'CTRL_VIS_GESPOT', 'CTRL_VIS_C6', 'STATUT_CTRL_VIS', 'DETAIL_CTRL_VIS',
         'DIST_ELEC', 'NB_KO', 'STATUT_GLOBAL', 'SOURCE_GESPOT', 'SOURCE_C6',
     ]
+    if has_etude:
+        headers.insert(1, 'ETUDE')
     statut_cols = {i + 1 for i, h in enumerate(headers) if h.startswith('STATUT_')}
 
     from openpyxl.styles import Font, PatternFill as _PF
@@ -562,10 +782,19 @@ def _write_analyse(wb: openpyxl.Workbook,
 
     fills = _fills()
     zebra = _PF('solid', fgColor='F2F2F2')
+    if note:
+        note_cell = ws.cell(row=2, column=1, value=note)
+        note_cell.font = Font(bold=True)
+        note_cell.fill = _PF('solid', fgColor='FFF2CC')
 
     for row_idx, cmp in enumerate(comparisons, 2):
         values = [
-            cmp.num, cmp.voie_gespot, cmp.num_voie_gespot,
+            cmp.num,
+        ]
+        if has_etude:
+            values.append(cmp.etude)
+        values.extend([
+            cmp.voie_gespot, cmp.num_voie_gespot,
             cmp.adresse_c6, cmp.statut_adresse, cmp.detail_adresse,
             cmp.centre_gespot, cmp.centre_c6, cmp.statut_centre, cmp.detail_centre,
             cmp.type_gespot, cmp.type_c6, cmp.statut_type, cmp.detail_type,
@@ -579,7 +808,7 @@ def _write_analyse(wb: openpyxl.Workbook,
             cmp.ctrl_vis_gespot, cmp.ctrl_vis_c6, cmp.statut_ctrl_vis, cmp.detail_ctrl_vis,
             cmp.dist_elec_gespot, cmp.nb_ecarts, cmp.statut_global,
             cmp.source_gespot, cmp.source_c6,
-        ]
+        ])
         bg = zebra if row_idx % 2 == 0 else None
         for col_idx, val in enumerate(values, 1):
             cell = ws.cell(row=row_idx, column=col_idx, value=val)
@@ -601,87 +830,21 @@ def _write_analyse(wb: openpyxl.Workbook,
     _auto_widths(ws)
 
 
-def _write_absent_c6(wb: openpyxl.Workbook,
-                     records: List[GespotRecord]) -> None:
-    ws = wb.create_sheet('ABSENT_C6')
-    headers = ['NUM', 'VOIE', 'NUM_VOIE', 'CENTRE', 'TYPE_GESPOT',
-               'STRAT_GESPOT', 'ENV_GESPOT', 'ELEC_GESPOT',
-               'INACC_GESPOT', 'RECALAGE', 'DIST_ELEC', 'SOURCE_GESPOT']
-    _write_sheet_header(ws, headers)
-    for r in records:
-        ws.append([r.num, r.voie, r.num_voie, r.centre, r.type_calc,
-                   r.strategie_calc, r.milieu_calc, r.pres_elect_calc,
-                   r.inacc_calc, r.recalage_raw, r.dist_elec, r.source_file])
-    ws.freeze_panes = 'A2'
-    _auto_widths(ws)
-
-
-def _write_absent_gespot(wb: openpyxl.Workbook,
-                         records: List[C6Record]) -> None:
-    ws = wb.create_sheet('ABSENT_GESPOT')
-    headers = ['NUM', 'ADRESSE_C6', 'CENTRE_C6', 'TYPE_C6', 'STRAT_C6',
-               'ENV_C6', 'ELEC_C6', 'INACC_C6', 'VERTIC_C6', 'SOURCE_C6']
-    _write_sheet_header(ws, headers)
-    for r in records:
-        ws.append([r.num, r.adresse, r.centre, r.type_c6, r.strat,
-                   r.env, r.elec, r.inacc, r.vertic, r.source_file])
-    ws.freeze_panes = 'A2'
-    _auto_widths(ws)
-
-
-def _write_anomalies(wb: openpyxl.Workbook,
-                     anomalies: List[dict]) -> None:
-    ws = wb.create_sheet('ANOMALIES_SOURCE')
-    headers = ['SOURCE', 'FICHIER_CONCERNE', 'APPUI_CONCERNE', 'CODE_ANOMALIE',
-               'EXPLICATION', 'ACTION_A_REALISER']
-    _write_sheet_header(ws, headers)
-    for a in anomalies:
-        ws.append([a.get('source', ''), a.get('fichier', ''),
-                   a.get('num', ''), a.get('type', ''),
-                   a.get('detail', ''), a.get('action', '')])
-    ws.freeze_panes = 'A2'
-    _auto_widths(ws)
-
-
-def _write_sheet_header(ws, headers: List[str]) -> None:
-    from openpyxl.styles import Font, PatternFill
-    hfill = _hdr_fill()
-    hfont = Font(bold=True)
-    for col_idx, h in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col_idx, value=h)
-        cell.fill = hfill
-        cell.font = hfont
-
-
-def _auto_widths(ws, max_width: int = 50) -> None:
-    from openpyxl.utils import get_column_letter
-    for col in ws.columns:
-        width = max(
-            (len(str(cell.value or '')) for cell in col),
-            default=10,
-        )
-        ws.column_dimensions[get_column_letter(col[0].column)].width = min(
-            width + 2, max_width
-        )
-
-
-# ===========================================================================
-#  POINT D'ENTRÉE PRINCIPAL
-# ===========================================================================
-
 def run_comparison(gespot_dir: str, c6_dir: str,
                    export_dir: str,
-                   progress_cb=None) -> GespotC6Result:
-    """Orchestre lecture → comparaison → export.
+                   progress_cb=None,
+                   etude_map=None) -> GespotC6Result:
+    """Orchestre lecture -> comparaison -> export.
 
     Args:
         gespot_dir: Chemin du dossier GESPOT/GSPOT.
         c6_dir:     Chemin du dossier C6 (= CAP FT).
         export_dir: Dossier de sortie.
         progress_cb: callable(pct, msg) optionnel.
+        etude_map:  {normalized_inf_num: etude_name ou 'HORS ETUDE'} optionnel.
 
     Returns:
-        GespotC6Result avec output_path renseigné.
+        GespotC6Result avec output_path renseigne.
     """
     def _prog(pct, msg=''):
         if progress_cb:
@@ -695,7 +858,13 @@ def run_comparison(gespot_dir: str, c6_dir: str,
     gespot_result = load_gespot_dir(gespot_dir, whitelist=c6_result.whitelist)
 
     _prog(60, 'Comparaison...')
-    result = compare(gespot_result, c6_result)
+    result = compare(gespot_result, c6_result, etude_map=etude_map)
+
+    result.gespot_file_counts = gespot_result.file_counts
+    result.c6_files_read = c6_result.files_read
+    result.c6_files_skipped = c6_result.files_skipped
+
+    _append_global_diagnostics(result, gespot_result, c6_result)
 
     _prog(85, 'Export Excel...')
     export_to_excel(result, export_dir)

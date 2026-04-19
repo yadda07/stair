@@ -32,8 +32,13 @@ class GespotWorkflow(QObject):
             self.current_task.cancel()
 
     def start_analysis(self, gespot_dir: str, c6_dir: str,
-                       export_dir: str) -> None:
-        """Lance la comparaison GESPOT vs C6 en tâche de fond."""
+                       export_dir: str, etude_map=None) -> None:
+        """Lance la comparaison GESPOT vs C6 en tache de fond.
+
+        Args:
+            etude_map: {normalized_inf_num: etude_name ou 'HORS ETUDE'} optionnel.
+                Construit depuis infra_pt_pot + etude_cap_ft par l'orchestrateur.
+        """
         self._cancelled = False
 
         if not os.path.isdir(gespot_dir):
@@ -47,6 +52,7 @@ class GespotWorkflow(QObject):
             'gespot_dir': gespot_dir,
             'c6_dir': c6_dir,
             'export_dir': export_dir,
+            'etude_map': etude_map or {},
         }
 
         self.current_task = GespotC6Task(params)

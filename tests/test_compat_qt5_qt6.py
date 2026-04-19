@@ -34,6 +34,7 @@ class TestCompatModule(unittest.TestCase):
             FR_NO_GEOMETRY,
             FIELD_TYPE_STRING, FIELD_TYPE_INT,
             FIELD_TYPE_DOUBLE, FIELD_TYPE_LONGLONG,
+            GEOM_POINT, GEOM_LINE, GEOM_POLYGON,
         )
         self.assertIsNotNone(QGIS_VERSION_INT)
         self.assertIsInstance(IS_QGIS4, bool)
@@ -80,6 +81,17 @@ class TestCompatModule(unittest.TestCase):
         req = QgsFeatureRequest()
         # Ne doit pas lever d'exception
         req.setFlags(FR_NO_GEOMETRY)
+
+    def test_geom_type_constants_match_memory_layers(self):
+        """GEOM_POINT/LINE/POLYGON doivent etre egaux a layer.geometryType()."""
+        from PoleAerien.compat import GEOM_POINT, GEOM_LINE, GEOM_POLYGON
+        from qgis.core import QgsVectorLayer
+        lyr_pt = QgsVectorLayer("Point?crs=EPSG:4326", "t", "memory")
+        lyr_ln = QgsVectorLayer("LineString?crs=EPSG:4326", "t", "memory")
+        lyr_pg = QgsVectorLayer("Polygon?crs=EPSG:4326", "t", "memory")
+        self.assertEqual(lyr_pt.geometryType(), GEOM_POINT)
+        self.assertEqual(lyr_ln.geometryType(), GEOM_LINE)
+        self.assertEqual(lyr_pg.geometryType(), GEOM_POLYGON)
 
 
 class TestNoDirectPyQt5Imports(unittest.TestCase):

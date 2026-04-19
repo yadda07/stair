@@ -37,10 +37,14 @@ MODULE_DAG = {
     'c6c3a':     {'depends_on': ['maj'], 'group': 1, 'background': False},
     'comac':     {'depends_on': ['maj'], 'group': 2, 'background': False},
     'police_c6': {'depends_on': ['maj'], 'group': 2, 'background': False},
-    'gespot_c6': {'depends_on': [],      'group': 0, 'background': True},
+    'gespot_c6': {'depends_on': [],      'group': 3, 'background': False},
 }
 # Note: comac and police_c6 in same group (2) because fddcpi2 is pre-fetched
 # by BatchDataExtractor._pre_extract_cables() before runner.start().
+# Note: gespot_c6 was background=True (Sprint E2) but caused sporadic
+# "access violation" crashes on QGIS 3.44 when openpyxl's C XML parser
+# (lxml/libxml2) ran concurrently with QGIS C++ layer iteration.
+# group=3 ensures it runs alone after all other modules finish.
 
 
 class BatchRunner(QObject):

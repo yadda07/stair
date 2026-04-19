@@ -1,253 +1,231 @@
--- FUNCTION: rip_avg_nge.fddcpi2_action(text, double precision)
+-- FUNCTION: rip_avg_nge.fddcpiax(text, double precision)
 
--- DROP FUNCTION IF EXISTS rip_avg_nge.fddcpi2_action(text, double precision);
+-- DROP FUNCTION IF EXISTS rip_avg_nge.fddcpiax(text, double precision);
 
 CREATE OR REPLACE FUNCTION rip_avg_nge.fddcpiax(
 	zasro text,
 	p_snap_tolerance double precision DEFAULT 0.70)
     RETURNS TABLE(gid_dc2 bigint, gid_dc bigint, gid integer, sro character varying, nro character varying, length double precision, cab_type character varying, cab_capa integer, cab_modulo bigint, isole character varying, date_modif timestamp with time zone, modif_par character varying, geom geometry, cab_nature character varying, commentaire character varying, collecte character varying, cb_etiquet character varying, fon character varying, projet character varying, "DCE" character varying, dist_type text, affectation character varying, posemode integer) 
     LANGUAGE 'plpgsql'
-    COST 100
+    COST 10000
     VOLATILE PARALLEL UNSAFE
     ROWS 1000
 
 AS $BODY$
 DECLARE
-    v_be text;
+    v_nb_infra integer;
+    v_nb_cables integer;
+    v_fallback double precision;
 BEGIN
     -- =========================================================================
-    -- 0. Detection du bureau d'etudes (NGE ou Axione)
-    --    Table comac.sro_nge_axione : colonne 'be' identifie l'ingenierie
-    -- =========================================================================
-    SELECT lower(s.be) INTO v_be
-    FROM comac.sro_nge_axione s
-    WHERE s.sro ILIKE '%' || zasro || '%'
-    LIMIT 1;
-
-    -- Si pas Axione -> deleguer a fddcpi2 standard (pipeline NGE avec attaches)
-    IF v_be IS NULL OR v_be != 'axione' THEN
-        RETURN QUERY SELECT * FROM rip_avg_nge.fddcpi2(zasro);
-        RETURN;
-    END IF;
-
-    -- =========================================================================
-    -- 1. Infrastructure (identique a fddcpi2)
+    -- 1. Infrastructure + BPE isoles
     -- =========================================================================
     DROP TABLE IF EXISTS temp_infra;
     CREATE TEMP TABLE temp_infra AS
     SELECT t0.gid_pt, t0.geom, t0.inf_type
     FROM rip_avg_nge.infra(zasro) t0;
-    
-    DROP TABLE IF EXISTS temp_infra_collect;
-    CREATE TEMP TABLE temp_infra_collect AS
-    SELECT ST_Collect(t0.geom) AS geom_collected
-    FROM temp_infra t0;
+
+    CREATE INDEX idx_tmp_infra_geom ON temp_infra USING GIST (geom);
+
+    INSERT INTO temp_infra (gid_pt, geom, inf_type)
+    SELECT 'bpe_' || b.gid, b.geom, COALESCE(b.noe_type, 'BPE')
+    FROM rip_avg_nge.bpe b
+    WHERE b.sro ILIKE '%' || zasro || '%'
+    AND NOT EXISTS (
+        SELECT 1 FROM temp_infra ti WHERE ST_DWithin(b.geom, ti.geom, 1.0)
+    );
 
     DROP TABLE IF EXISTS temp_infra_points;
     CREATE TEMP TABLE temp_infra_points AS
-    SELECT 
-        t_pts.gid_pt,
-        t_pts.geom,
-        t_pts.inf_type
+    SELECT t_pts.gid_pt, t_pts.geom, t_pts.inf_type
     FROM temp_infra t_pts
-    WHERE t_pts.gid_pt LIKE 'chb_%' 
-       OR t_pts.gid_pt LIKE 'pot_%'
-       OR t_pts.gid_pt LIKE 'atr_%';
-    
+    WHERE t_pts.gid_pt LIKE 'chb_%' OR t_pts.gid_pt LIKE 'pot_%'
+       OR t_pts.gid_pt LIKE 'atr_%' OR t_pts.gid_pt LIKE 'bpe_%';
+
+    CREATE INDEX idx_tmp_infra_pts_geom ON temp_infra_points USING GIST (geom);
+
+    SELECT count(*) INTO v_nb_infra FROM temp_infra_points;
+    RAISE NOTICE 'fddcpiax(%): % points infra', zasro, v_nb_infra;
+    IF v_nb_infra = 0 THEN
+        RAISE WARNING 'fddcpiax(%): 0 points infra -> tous les cables seront orphelins (posemode=4)', zasro;
+    END IF;
+
     -- =========================================================================
-    -- 2. Cables depuis FDDCPFA directement (bypass fdrca - pas d'attaches)
-    --    Donnees Axione : cables avec decalage ~0.70m par rapport a l'infra,
-    --    pas de relation spatiale directe (ni intersection, ni attache).
+    -- 2. Cables depuis FDDCPFA (pipeline unifie NGE + Axione)
     -- =========================================================================
     DROP TABLE IF EXISTS temp_cables;
     CREATE TEMP TABLE temp_cables AS
-    SELECT 
-        t1.gid, 
-        t1.gid_dc, 
-        t1.geom, 
-        t1.sro, 
-        t1.nro, 
-        t1.cab_type, 
-        t1.cab_capa, 
-        t1.cab_modulo, 
-        t1.isole, 
-        t1.date_modif, 
-        t1.modif_par,
-        t1.cab_nature, 
-        t1.commentaire, 
-        t1.collecte, 
-        t1.cb_etiquet, 
-        t1.fon, 
-        t1.projet, 
-        t1."DCE", 
-        t1.dist_type, 
-        t1.affectation
-    FROM rip_avg_nge.FDDCPFA(zasro, 1) t1;
+    SELECT t1.gid, t1.gid_dc, t1.geom, t1.sro, t1.nro, t1.cab_type, t1.cab_capa,
+           t1.cab_modulo, t1.isole, t1.date_modif, t1.modif_par, t1.cab_nature,
+           t1.commentaire, t1.collecte, t1.cb_etiquet, t1.fon, t1.projet,
+           t1."DCE", t1.dist_type, t1.affectation
+    FROM rip_avg_nge.FDDCPFA(zasro, 1) t1
+    WHERE ST_IsValid(t1.geom) AND ST_Length(t1.geom) > 0.2 AND t1.geom IS NOT NULL;
 
-    -- Nettoyage : cables courts ou nuls
-    DELETE FROM temp_cables 
-    WHERE ST_Length(temp_cables.geom) < 0.2 OR temp_cables.geom IS NULL;
-    
-    -- Deduplication (meme logique que fdrca)
-    DELETE FROM temp_cables
-    WHERE temp_cables.ctid IN (
+    DELETE FROM temp_cables WHERE ctid IN (
         SELECT sub.ctid FROM (
-            SELECT t.ctid, 
-                   ROW_NUMBER() OVER (
-                       PARTITION BY t.gid, md5(ST_AsText(t.geom)) 
-                       ORDER BY t.gid
-                   ) AS rnum
-            FROM temp_cables t
-        ) sub
-        WHERE sub.rnum > 1
+            SELECT t.ctid, ROW_NUMBER() OVER (
+                PARTITION BY t.gid, t.gid_dc, md5(ST_AsBinary(t.geom)) ORDER BY t.ctid
+            ) AS rnum FROM temp_cables t
+        ) sub WHERE sub.rnum > 1
     );
 
+    CREATE INDEX idx_tmp_cables_geom ON temp_cables USING GIST (geom);
+
+    SELECT count(*) INTO v_nb_cables FROM temp_cables;
+    RAISE NOTICE 'fddcpiax(%): % cables charges', zasro, v_nb_cables;
+    IF v_nb_cables = 0 THEN
+        RAISE WARNING 'fddcpiax(%): 0 cables charges depuis FDDCPFA', zasro;
+        RETURN;
+    END IF;
+
+    v_fallback := GREATEST(5.0, p_snap_tolerance * 2.0);
+
     -- =========================================================================
-    -- 3. Snap + Split + Posemode
-    --    ST_Snap avec tolerance elargie gere les 2 cas Axione :
-    --    a) Vertex du cable proche du poteau -> deplacement du vertex
-    --    b) Segment qui passe a cote du poteau -> ajout d'un vertex + deplacement
+    -- 3. Projection perpendiculaire + Split + Passthrough + Posemode
+    --    Projection : ST_ClosestPoint(cable, infra) -> point SUR le cable
+    --    Split : uniquement si projection mid-cable (1%-99%)
+    --    Passthrough : cables avec infra aux extremites, pas de split necessaire
+    --    Orphan : aucune infra a proximite -> posemode=4
     -- =========================================================================
     RETURN QUERY
-    WITH cable_selection AS (
-        SELECT 
-            t2.gid AS cable_gid, 
-            t2.gid_dc,
-            t2.geom AS cable_geom,
-            t3.geom_collected
-        FROM temp_cables AS t2
-        CROSS JOIN temp_infra_collect AS t3
-        WHERE ST_DWithin(t2.geom, t3.geom_collected, p_snap_tolerance)
+    WITH
+    -- 3a. Projections mid-cable (evite micro-segments aux extremites)
+    cable_mid_projs AS (
+        SELECT t2.gid AS cable_gid, t2.gid_dc, t2.geom AS cable_geom,
+               ST_Collect(proj.pt) AS proj_points
+        FROM temp_cables t2
+        JOIN temp_infra_points ip ON ST_DWithin(t2.geom, ip.geom, p_snap_tolerance)
+        CROSS JOIN LATERAL (SELECT ST_ClosestPoint(t2.geom, ip.geom) AS pt) proj
+        WHERE ST_LineLocatePoint(t2.geom, proj.pt) BETWEEN 0.01 AND 0.99
+        GROUP BY t2.gid, t2.gid_dc, t2.geom
     ),
-    snapped_cables AS (
-        SELECT
-            t4.cable_gid,
-            t4.gid_dc,
-            ST_Snap(t4.cable_geom, t4.geom_collected, p_snap_tolerance) AS snapped_geom,
-            t4.geom_collected
-        FROM cable_selection AS t4
-        WHERE ST_IsValid(t4.cable_geom) AND ST_Length(t4.cable_geom) > 0.2
+    -- 3b. Snap + Split (inline, pas de CTE intermediaire)
+    split_segments AS (
+        SELECT cp.cable_gid AS gid, cp.gid_dc,
+               (ST_Dump(ST_Split(
+                   ST_Snap(cp.cable_geom, cp.proj_points, 0.01),
+                   cp.proj_points
+               ))).geom AS geom
+        FROM cable_mid_projs cp
     ),
-    split_cables AS (
-        SELECT
-            t5.cable_gid,
-            t5.gid_dc,
-            (ST_Dump(ST_Split(t5.snapped_geom, t5.geom_collected))).geom AS split_geom
-        FROM snapped_cables AS t5
+    -- 3c. Passthrough : cables avec infra a proximite mais pas de projection mid
+    --     (cable qui se TERMINE a un appui sans passer par d'autres)
+    passthrough AS (
+        SELECT tc.gid, tc.gid_dc, tc.geom
+        FROM temp_cables tc
+        WHERE NOT EXISTS (
+            SELECT 1 FROM cable_mid_projs cp
+            WHERE cp.cable_gid = tc.gid AND cp.gid_dc = tc.gid_dc
+        )
+        AND EXISTS (
+            SELECT 1 FROM temp_infra_points ip
+            WHERE ST_DWithin(tc.geom, ip.geom, p_snap_tolerance)
+        )
     ),
-    valid_split_cables AS (
-        SELECT 
-            t6.cable_gid,
-            t6.gid_dc,
-            t6.split_geom
-        FROM split_cables t6
-        WHERE ST_IsValid(t6.split_geom) AND ST_Length(t6.split_geom) > 0.2 
+    -- 3d. Union split + passthrough, dedup, numerotation
+    all_segments AS (
+        SELECT ss.gid, ss.gid_dc, ss.geom FROM split_segments ss
+        WHERE ST_IsValid(ss.geom) AND ST_Length(ss.geom) > 0.2
+          AND GeometryType(ss.geom) = 'LINESTRING'
+        UNION ALL
+        SELECT pt.gid, pt.gid_dc, pt.geom FROM passthrough pt
     ),
-    unique_cables AS (
-        SELECT DISTINCT ON (t7.gid_dc, t7.cable_gid, t7.split_geom)
-            ROW_NUMBER() OVER (ORDER BY t7.gid_dc, t7.cable_gid) AS gid_dc2,
-            t7.gid_dc,
-            t7.cable_gid AS gid,
-            t7.split_geom AS geom
-        FROM valid_split_cables t7
+    unique_segments AS (
+        SELECT ROW_NUMBER() OVER (ORDER BY t.gid_dc, t.gid) AS gid_dc2,
+               t.gid_dc, t.gid, t.geom
+        FROM (
+            SELECT DISTINCT ON (v.gid_dc, v.gid, md5(ST_AsBinary(v.geom)))
+                v.gid_dc, v.gid, v.geom
+            FROM all_segments v
+            ORDER BY v.gid_dc, v.gid, md5(ST_AsBinary(v.geom))
+        ) t
     ),
-    cable_endpoints AS (
-        SELECT
-            uc.gid_dc2,
-            uc.gid_dc,
-            uc.gid,
-            uc.geom,
-            ST_StartPoint(uc.geom) AS start_point,
-            ST_EndPoint(uc.geom) AS end_point
-        FROM unique_cables uc
+    -- 3e. Endpoints + association infra (2 tiers: tolerance directe, puis 5m fallback)
+    endpoints AS (
+        SELECT uc.gid_dc2, uc.gid_dc, uc.gid, uc.geom,
+               ST_StartPoint(uc.geom) AS sp, ST_EndPoint(uc.geom) AS ep
+        FROM unique_segments uc
     ),
-    endpoint_infrastructure AS (
-        SELECT
-            ce.gid_dc2,
-            ce.gid_dc,
-            ce.gid,
-            ce.geom,
-            (SELECT ip1.gid_pt FROM temp_infra_points ip1 
-             WHERE ST_DWithin(ce.start_point, ip1.geom, p_snap_tolerance) 
-             ORDER BY ST_Distance(ce.start_point, ip1.geom) LIMIT 1) AS start_infra,
-            (SELECT ip2.gid_pt FROM temp_infra_points ip2 
-             WHERE ST_DWithin(ce.end_point, ip2.geom, p_snap_tolerance) 
-             ORDER BY ST_Distance(ce.end_point, ip2.geom) LIMIT 1) AS end_infra,
-            (SELECT ip1.inf_type FROM temp_infra_points ip1 
-             WHERE ST_DWithin(ce.start_point, ip1.geom, p_snap_tolerance) 
-             ORDER BY ST_Distance(ce.start_point, ip1.geom) LIMIT 1) AS start_inf_type,
-            (SELECT ip2.inf_type FROM temp_infra_points ip2 
-             WHERE ST_DWithin(ce.end_point, ip2.geom, p_snap_tolerance) 
-             ORDER BY ST_Distance(ce.end_point, ip2.geom) LIMIT 1) AS end_inf_type
-        FROM cable_endpoints ce
+    infra_match AS (
+        SELECT e.gid_dc2, e.gid_dc, e.gid, e.geom,
+               sm.gid_pt AS start_infra, sm.inf_type AS start_inf_type,
+               em.gid_pt AS end_infra, em.inf_type AS end_inf_type
+        FROM endpoints e
+        LEFT JOIN LATERAL (
+            SELECT ip.gid_pt, ip.inf_type FROM temp_infra_points ip
+            WHERE ST_DWithin(e.sp, ip.geom, v_fallback)
+            ORDER BY
+                CASE WHEN ST_DWithin(e.sp, ip.geom, p_snap_tolerance) THEN 0 ELSE 1 END,
+                CASE WHEN ip.gid_pt NOT LIKE 'bpe_%' THEN 0 ELSE 1 END,
+                ST_Distance(e.sp, ip.geom)
+            LIMIT 1
+        ) sm ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT ip.gid_pt, ip.inf_type FROM temp_infra_points ip
+            WHERE ST_DWithin(e.ep, ip.geom, v_fallback)
+            ORDER BY
+                CASE WHEN ST_DWithin(e.ep, ip.geom, p_snap_tolerance) THEN 0 ELSE 1 END,
+                CASE WHEN ip.gid_pt NOT LIKE 'bpe_%' THEN 0 ELSE 1 END,
+                ST_Distance(e.ep, ip.geom)
+            LIMIT 1
+        ) em ON TRUE
     ),
-    posemode_determination AS (
-        SELECT
-            ei.gid_dc2,
-            ei.gid_dc,
-            ei.gid,
-            ei.geom,
-            ei.start_infra,
-            ei.end_infra,
-            ei.start_inf_type,
-            ei.end_inf_type,
+    -- 3f. Posemode
+    posemode_calc AS (
+        SELECT im.gid_dc2, im.gid_dc, im.gid, im.geom,
             CASE
-                -- Facade (posemode = 2)
-                WHEN (ei.start_infra LIKE 'atr_%' AND ei.start_inf_type = 'FAC') OR
-                     (ei.end_infra LIKE 'atr_%' AND ei.end_inf_type = 'FAC') THEN 2
-                
-                -- Souterrain (posemode = 0)
-                WHEN (ei.start_infra LIKE 'chb_%' AND ei.end_infra LIKE 'chb_%') THEN 0
-                WHEN (ei.start_infra LIKE 'chb_%' AND ei.end_infra LIKE 'atr_%') OR 
-                     (ei.start_infra LIKE 'atr_%' AND ei.end_infra LIKE 'chb_%') THEN 0
-		
-		        WHEN (ei.start_infra LIKE 'pot_%' AND ei.end_infra LIKE 'chb_%') OR
-                     (ei.start_infra LIKE 'chb_%' AND ei.end_infra LIKE 'pot_%') THEN 0
-		
-                WHEN (ei.start_infra LIKE 'pot_%' AND ei.end_infra LIKE 'atr_%' AND ei.end_inf_type = 'ADR') OR
-                     (ei.start_infra LIKE 'atr_%' AND ei.start_inf_type = 'ADR' AND ei.end_infra LIKE 'pot_%') THEN 0
-                
-                -- Aerien (posemode = 1)
-                WHEN (ei.start_infra LIKE 'pot_%' AND ei.end_infra LIKE 'pot_%') THEN 1
-
-                WHEN (ei.start_infra LIKE 'pot_%' AND ei.end_infra LIKE 'atr_%' AND ei.end_inf_type = 'IMM') OR
-                     (ei.start_infra LIKE 'atr_%' AND ei.start_inf_type = 'IMM' AND ei.end_infra LIKE 'pot_%') THEN 1
-                
-                ELSE 4 --indefini DQE
+                WHEN (im.start_infra LIKE 'atr_%' AND im.start_inf_type = 'FAC') OR
+                     (im.end_infra LIKE 'atr_%' AND im.end_inf_type = 'FAC') THEN 2
+                WHEN im.start_infra LIKE 'chb_%' AND im.end_infra LIKE 'chb_%' THEN 0
+                WHEN (im.start_infra LIKE 'chb_%' AND im.end_infra LIKE 'atr_%') OR
+                     (im.start_infra LIKE 'atr_%' AND im.end_infra LIKE 'chb_%') THEN 0
+                WHEN (im.start_infra LIKE 'pot_%' AND im.end_infra LIKE 'chb_%') OR
+                     (im.start_infra LIKE 'chb_%' AND im.end_infra LIKE 'pot_%') THEN 0
+                WHEN (im.start_infra LIKE 'pot_%' AND im.end_infra LIKE 'atr_%' AND im.end_inf_type = 'ADR') OR
+                     (im.start_infra LIKE 'atr_%' AND im.start_inf_type = 'ADR' AND im.end_infra LIKE 'pot_%') THEN 0
+                WHEN im.start_infra LIKE 'pot_%' AND im.end_infra LIKE 'pot_%' THEN 1
+                WHEN (im.start_infra LIKE 'pot_%' AND im.end_infra LIKE 'atr_%' AND im.end_inf_type = 'IMM') OR
+                     (im.start_infra LIKE 'atr_%' AND im.start_inf_type = 'IMM' AND im.end_infra LIKE 'pot_%') THEN 1
+                WHEN (im.start_infra LIKE 'bpe_%' AND im.end_infra LIKE 'pot_%') OR
+                     (im.start_infra LIKE 'pot_%' AND im.end_infra LIKE 'bpe_%') THEN 1
+                WHEN (im.start_infra LIKE 'bpe_%' AND im.end_infra LIKE 'chb_%') OR
+                     (im.start_infra LIKE 'chb_%' AND im.end_infra LIKE 'bpe_%') THEN 0
+                ELSE 4
             END AS posemode
-        FROM endpoint_infrastructure ei
+        FROM infra_match im
     ),
+    -- 3g. Resultats (join attributs cable)
     results AS (
-        SELECT 
-            pd.gid_dc2,
-            pd.gid_dc, 
-            pd.gid, 
-            t8.sro, 
-            t8.nro, 
-            ST_Length(pd.geom) AS length,
-            t8.cab_type, 
-            t8.cab_capa, 
-            t8.cab_modulo,
-            t8.isole, 
-            t8.date_modif, 
-            t8.modif_par,
-            pd.geom::geometry(linestring, 2154) AS geom, 
-            t8.cab_nature, 
-            t8.commentaire, 
-            t8.collecte, 
-            t8.cb_etiquet, 
-            t8.fon, 
-            t8.projet, 
-            t8."DCE", 
-            t8.dist_type, 
-            t8.affectation,
-            COALESCE(pd.posemode, 0) AS posemode 
-        FROM posemode_determination pd
-        JOIN temp_cables AS t8 
-            ON pd.gid = t8.gid 
-            AND pd.gid_dc = t8.gid_dc
+        SELECT pc.gid_dc2, pc.gid_dc, pc.gid, t8.sro, t8.nro,
+               ST_Length(pc.geom) AS length, t8.cab_type, t8.cab_capa, t8.cab_modulo,
+               t8.isole, t8.date_modif, t8.modif_par,
+               pc.geom::geometry(linestring, 2154) AS geom,
+               t8.cab_nature, t8.commentaire, t8.collecte, t8.cb_etiquet,
+               t8.fon, t8.projet, t8."DCE", t8.dist_type, t8.affectation,
+               pc.posemode
+        FROM posemode_calc pc
+        JOIN temp_cables t8 ON pc.gid = t8.gid AND pc.gid_dc = t8.gid_dc
+    ),
+    -- 3h. Orphelins : aucune infra a proximite du cable entier
+    orphan_cables AS (
+        SELECT (900000 + ROW_NUMBER() OVER (ORDER BY tc.gid_dc, tc.gid))::bigint AS gid_dc2,
+               tc.gid_dc, tc.gid, tc.sro, tc.nro,
+               ST_Length(tc.geom) AS length, tc.cab_type, tc.cab_capa, tc.cab_modulo,
+               tc.isole, tc.date_modif, tc.modif_par,
+               tc.geom::geometry(linestring, 2154) AS geom,
+               tc.cab_nature, tc.commentaire, tc.collecte, tc.cb_etiquet,
+               tc.fon, tc.projet, tc."DCE", tc.dist_type, tc.affectation,
+               4 AS posemode
+        FROM temp_cables tc
+        WHERE NOT EXISTS (
+            SELECT 1 FROM temp_infra_points ip
+            WHERE ST_DWithin(tc.geom, ip.geom, p_snap_tolerance)
+        )
     )
-    SELECT * FROM results;   
+    SELECT * FROM results
+    UNION ALL
+    SELECT * FROM orphan_cables;
 
 END;
 $BODY$;
@@ -265,20 +243,27 @@ GRANT EXECUTE ON FUNCTION rip_avg_nge.fddcpiax(text, double precision) TO sdupay
 
 COMMENT ON FUNCTION rip_avg_nge.fddcpiax(text, double precision)
     IS '
-FDDCPI2_ACTION - Variante de FDDCPI2 adaptee aux donnees Axione (sans attaches).
+FDDCPIAX - Pipeline unifie de decoupe cable (NGE + Axione).
 
-Differences avec fddcpi2 :
-- Bypass de FDRCA : les cables sont pris directement depuis FDDCPFA (pas d''attaches a traiter)
-- Tolerance de snap elargie (defaut 0.70m) pour compenser le decalage systematique
-  entre les cables et l''infrastructure dans l''ingenierie Axione
-- ST_Snap gere 2 cas :
-  (a) vertex du cable proche du poteau -> deplacement du vertex sur le poteau
-  (b) segment qui passe a cote du poteau sans vertex -> ajout d''un vertex + deplacement
+Remplace fddcpi2 comme point d''entree unique. Pas de delegation.
+
+Pipeline :
+1. Infra (poteaux, chambres, autres) + BPE isoles (>1m de toute infra)
+2. Cables depuis FDDCPFA, dedup par (gid, gid_dc, geom_hash)
+3. Projection perpendiculaire : ST_ClosestPoint(cable, infra) -> point SUR le cable
+   Split si projection mid-cable (1%-99%)
+   Passthrough si infra uniquement aux extremites (pas de split)
+   Orphelins si aucune infra a proximite -> posemode=4
+4. Association endpoint-infra (LATERAL JOIN 2 tiers) :
+   Tier 1 = p_snap_tolerance (match direct)
+   Tier 2 = fallback GREATEST(5m, 2*tolerance)
+   Priorite : infra traditionnelle > BPE, puis distance
+5. Posemode : 0=souterrain, 1=aerien, 2=facade, 4=indefini
 
 Parametres :
 - zasro : identifiant SRO
-- p_snap_tolerance : tolerance d''accrochage en metres (defaut 0.70)
-
-Posemode identique a fddcpi2 :
-- 0 = souterrain, 1 = aerien, 2 = facade, 4 = indefini
+- p_snap_tolerance : rayon de recherche infra en metres (defaut 0.70)
 ';
+
+
+

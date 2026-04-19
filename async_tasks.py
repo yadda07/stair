@@ -28,6 +28,7 @@ from qgis.PyQt.QtCore import QObject, pyqtSignal, QTimer
 
 from qgis.core import QgsTask, QgsApplication, QgsMessageLog, Qgis
 from .compat import MSG_INFO, MSG_WARNING, MSG_CRITICAL
+from .core_utils import normalize_appui_num
 
 import traceback
 
@@ -917,7 +918,7 @@ class ComacTask(AsyncTaskBase):
 
         _t_excel_comac = _time.perf_counter()
 
-        doublons, erreurs_lecture, dico_excel, dico_verif_secu, dico_cables_comac, dico_boitier_comac, dico_coords = com.LectureFichiersExcelsComac(
+        doublons, erreurs_lecture, dico_excel, dico_verif_secu, dico_cables_comac, dico_boitier_comac, dico_coords, dico_etude_par_appui = com.LectureFichiersExcelsComac(
 
             self.params['chemin_comac'],
 
@@ -980,6 +981,14 @@ class ComacTask(AsyncTaskBase):
         all_inf_nums = self.qgis_data.get('all_inf_nums', set())
         coords_qgis = self.qgis_data.get('coords_qgis', {})
 
+        # Map QGIS spatiale {norm_key: etude} AVANT mutation par traitementResultatFinaux
+        qgis_etude_map = {}
+        for _et_name, _et_pots in dico_qgis.items():
+            for _raw in _et_pots:
+                _k = normalize_appui_num(_raw, keep_commune=True)
+                if _k:
+                    qgis_etude_map[_k] = _et_name
+
         spatial_tol = self.params.get('spatial_tolerance', 7.5)
         _t_calc_comac = _time.perf_counter()
         resultats = com.traitementResultatFinaux(
@@ -1038,7 +1047,7 @@ class ComacTask(AsyncTaskBase):
 
             try:
 
-                from .db_connection import DatabaseConnection
+                from .db_connection import DatabaseConnection, get_shared_connection
 
                 from .cable_analyzer import compter_cables_par_appui, verifier_boitiers
 
@@ -1050,7 +1059,6 @@ class ComacTask(AsyncTaskBase):
                 
 
                 # === Mapping noms Excel -> QGIS (pour cables et boitiers) ===
-                from .core_utils import normalize_appui_num
                 name_map = {}  # {excel_norm -> qgis_inf_num}
                 absent_sro_keys = set()
                 hors_perimetre_keys = set()
@@ -1205,17 +1213,24 @@ class ComacTask(AsyncTaskBase):
                         # Appliquer le mapping aux cles cables COMAC
                         # normalize_appui_num(keep_commune=True): meme normalisation que extraire_appuis_wkb
                         dico_cables_translated = {}
+                        dico_etude_translated = {}
                         nb_translated = 0
                         for key_comac, refs in dico_cables_comac.items():
                             mapped = name_map.get(key_comac)
                             if mapped:
-                                dico_cables_translated[normalize_appui_num(mapped, keep_commune=True)] = refs
+                                translated_key = normalize_appui_num(mapped, keep_commune=True)
+                                dico_cables_translated[translated_key] = refs
+                                dico_etude_translated[translated_key] = qgis_etude_map.get(translated_key, dico_etude_par_appui.get(key_comac, ''))
                                 nb_translated += 1
                             else:
                                 dico_cables_translated[key_comac] = refs
+                                dico_etude_translated[key_comac] = qgis_etude_map.get(key_comac, dico_etude_par_appui.get(key_comac, ''))
 
                         # Comparer COMAC vs cables
                         verif_cables = com.comparer_comac_cables(dico_cables_translated, cables_par_appui, ref_label=src_label)
+
+                        for entry in verif_cables:
+                            entry['nom_etude'] = dico_etude_translated.get(entry.get('num_appui', ''), '')
 
                         absent_prefix = f"ABSENT_{src_label.upper().replace(' ', '_')}"
                         for entry in verif_cables:
@@ -1430,6 +1445,16 @@ class ComacTask(AsyncTaskBase):
 
                         entry['boitier_statut'] = bv.get('statut', '')
 
+                        # ECART avec PEP : le cable a pu etre decoupe au PEP, ecart attendu
+                        if (entry.get('statut') == 'ECART'
+                                and entry.get('bpe_noe_type', '').upper() == 'PEP'
+                                and entry.get('nb_cables_bdd', 0) > entry.get('nb_cables_comac', 0)):
+                            entry['statut'] = 'ECART_PEP'
+                            entry['message'] = (
+                                entry.get('message', '')
+                                + ' | PEP detecte : ecart probablement lie au decoupage du cable au point d\'epissurage'
+                            )
+
                     
 
                     # Ajouter les appuis boîtier-only (pas de câbles COMAC)
@@ -1438,9 +1463,13 @@ class ComacTask(AsyncTaskBase):
 
                         if num_appui not in appuis_in_cables:
 
+                            excel_key_b = reverse_map.get(num_appui, num_appui)
+
                             verif_cables.append({
 
                                 'num_appui': num_appui,
+
+                                'nom_etude': qgis_etude_map.get(num_appui, dico_etude_par_appui.get(excel_key_b, '')),
 
                                 'nb_cables_comac': 0,
 
@@ -1456,7 +1485,7 @@ class ComacTask(AsyncTaskBase):
 
                                 'message': '',
 
-                                'boitier_comac': dico_boitier_comac.get(reverse_map.get(num_appui, num_appui), ''),
+                                'boitier_comac': dico_boitier_comac.get(excel_key_b, ''),
 
                                 'bpe_noe_type': bv.get('bpe_noe_type', ''),
 
@@ -1606,7 +1635,6 @@ class ComacTask(AsyncTaskBase):
                             # - valeurs = noms SANS commune (pour matcher _translate sur ref)
                             # _translate() appelle _norm() sans keep_commune -> strip /commune
                             # Les deux cotes doivent etre dans le meme format
-                            from .core_utils import normalize_appui_num
                             pcm_name_map = {}
                             for k, v in name_map.items():
                                 k_sans = k.split('/')[0] if '/' in k else k
@@ -2933,6 +2961,7 @@ class GespotC6Task(AsyncTaskBase):
         gespot_dir = self.params['gespot_dir']
         c6_dir = self.params['c6_dir']
         export_dir = self.params['export_dir']
+        etude_map = self.params.get('etude_map') or None
 
         def _prog(pct, msg=''):
             if self.isCanceled():
@@ -2942,10 +2971,50 @@ class GespotC6Task(AsyncTaskBase):
                 self.emit_message(msg, 'grey')
 
         result = run_comparison(gespot_dir, c6_dir, export_dir,
-                                progress_cb=_prog)
+                                progress_cb=_prog,
+                                etude_map=etude_map)
 
         if self.isCanceled():
             return False
+
+        gs_counts = result.gespot_file_counts
+        gs_read = len(gs_counts)
+        gs_appuis = sum(gs_counts.values())
+        gs_skip = sum(
+            1 for a in result.anomalies
+            if a.get('source') == 'GESPOT' and a.get('type') == 'FICHIER_IGNORE'
+        )
+        gs_msg = f"GESPOT : {gs_read} fichier(s) CSV lus, {gs_appuis} appui(s) extraits"
+        if gs_skip:
+            gs_msg += f", {gs_skip} ignore(s)"
+        self.emit_message(gs_msg, 'orange' if gs_skip else 'grey')
+
+        c6_read = result.c6_files_read
+        c6_skip = result.c6_files_skipped
+        c6_msg = f"C6 : {c6_read} fichier(s) Excel lus, {len(result.absent_gespot) + len(result.comparisons)} appui(s)"
+        if c6_skip:
+            c6_msg += f", {c6_skip} ignore(s)"
+        self.emit_message(c6_msg, 'orange' if c6_skip else 'grey')
+
+        for anom in result.anomalies:
+            atype = anom.get('type', '')
+            if atype in (
+                'FICHIER_IGNORE', 'FEUILLE_EXPORT_1_ABSENTE',
+                'CENTRE_C6_ABSENT', 'AUCUN_APPUI_GESPOT',
+                'AUCUN_APPUI_C6', 'AUCUNE_JOINTURE_NUM',
+            ):
+                src = anom.get('source', '')
+                fname = anom.get('fichier', '')
+                detail = anom.get('detail', '')
+                self.emit_message(f"  [!] {src} {fname}: {detail}", 'orange')
+
+        if etude_map:
+            nb_he = sum(1 for c in result.comparisons if c.etude == 'HORS ETUDE')
+            if nb_he:
+                self.emit_message(
+                    f"ATTENTION: {nb_he} poteaux hors perimetre etude",
+                    'orange',
+                )
 
         nb_ok = sum(1 for c in result.comparisons if c.statut_global == 'OK')
         nb_ecart = sum(1 for c in result.comparisons if c.statut_global == 'KO')
@@ -2970,6 +3039,7 @@ class GespotC6Task(AsyncTaskBase):
             'absent_c6': result.absent_c6,
             'absent_gespot': result.absent_gespot,
             'anomalies': result.anomalies,
+            'etude_map': result.etude_map,
             'output_path': result.output_path,
         }
         return True

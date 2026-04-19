@@ -6,10 +6,10 @@ Controle qualite et mise a jour des poteaux aeriens ENEDIS (FT/BT)
 Copyright (C) 2022-2026 NGE ES
 License: GNU GPL v2+
 """
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
+from qgis.PyQt.QtCore import QTranslator, QCoreApplication
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction
-from qgis.core import QgsMessageLog, Qgis
+from qgis.core import QgsMessageLog, Qgis, QgsSettings
 from .compat import MSG_WARNING
 from .resources import *
 import os.path
@@ -33,7 +33,7 @@ class PoleAerien:
         self.iface = iface
         self.plugin_dir = os.path.dirname(__file__)
 
-        locale = QSettings().value('locale/userLocale')[0:2]
+        locale = (QgsSettings().value('locale/userLocale') or 'en')[0:2]
         locale_path = os.path.join(
             self.plugin_dir, 'i18n', f'PoleAerien_{locale}.qm')
         if os.path.exists(locale_path):
@@ -41,10 +41,10 @@ class PoleAerien:
             self.translator.load(locale_path)
             QCoreApplication.installTranslator(self.translator)
 
-        self.toolbar = self.iface.addToolBar(u'&Pole Aerien')
-        self.toolbar.setObjectName(u'&Pole Aerien')
+        self.toolbar = self.iface.addToolBar(u'&ST-AIR')
+        self.toolbar.setObjectName(u'&ST-AIR')
         self.actions = []
-        self.menu = self.tr(u'&Pole Aerien')
+        self.menu = self.tr(u'&ST-AIR')
 
         # Workflows (shared business logic orchestrators)
         self.maj_workflow = MajWorkflow()
@@ -83,10 +83,11 @@ class PoleAerien:
         return action
 
     def initGui(self):
-        icon_path = ':/plugins/PoleAerien/images/icon.svg'
+        # ST-AIR : chemin filesystem direct, evite la recompilation resources.qrc
+        icon_path = os.path.join(self.plugin_dir, 'images', 'icon.svg')
         self.add_action(
             icon_path,
-            text=self.tr(u'Pole Aerien'),
+            text=self.tr(u'ST-AIR'),
             callback=self.run,
             parent=self.iface.mainWindow())
 
@@ -105,7 +106,7 @@ class PoleAerien:
                     pass
             for action in self.actions:
                 self.iface.removePluginMenu(
-                    self.tr(u'&Pole Aerien'), action)
+                    self.tr(u'&ST-AIR'), action)
                 self.iface.removeToolBarIcon(action)
             del self.toolbar
         except Exception as e:

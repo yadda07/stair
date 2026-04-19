@@ -44,6 +44,9 @@ import openpyxl
 
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
+_RE_CABLE_PREFIX = re.compile(r'^L\d', re.IGNORECASE)
+_RE_CABLE_REF = re.compile(r'L\d+-\d+(?:-P)?', re.IGNORECASE)
+
 
 class PoliceC6Cancelled(Exception):
     """Annulation demandée par l'utilisateur."""
@@ -410,10 +413,14 @@ class PoliceC6:
                         boitier_par_appui[current_appui] = boitier_val
                 
                 if current_appui and nom_cable:
-                    is_cable = bool(re.match(r'^L\d', nom_cable, re.IGNORECASE))
-                    
+                    is_cable = bool(_RE_CABLE_PREFIX.match(nom_cable))
+
                     if is_cable and cable_is_bold:
-                        donnees_par_appui[current_appui].append(nom_cable)
+                        refs = _RE_CABLE_REF.findall(nom_cable)
+                        if refs:
+                            donnees_par_appui[current_appui].extend(refs)
+                        else:
+                            donnees_par_appui[current_appui].append(nom_cable)
                     
                     liste_brute.append({
                         'ligne': row_idx,

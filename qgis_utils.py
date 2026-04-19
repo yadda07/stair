@@ -28,6 +28,36 @@ _ETUDE_FIELD_PATTERNS = [
 ]
 
 
+def _index_from_names(layer, candidate_names, context=""):
+    """Retourne l'index du premier champ trouve parmi plusieurs alias.
+
+    Utile pour resoudre les noms tronques DBF (10 chars) vs noms PostgreSQL
+    complets sur la meme couche logique.
+
+    Args:
+        layer: QgsVectorLayer
+        candidate_names: iterable de noms de champs a essayer dans l'ordre
+        context: Contexte pour message de log
+
+    Returns:
+        int: index du champ trouve, ou -1 si aucun.
+    """
+    if not layer:
+        return -1
+    fields = layer.fields()
+    for name in candidate_names:
+        idx = fields.indexFromName(name)
+        if idx >= 0:
+            return idx
+    QgsMessageLog.logMessage(
+        f"[{context or '_index_from_names'}] Aucun champ trouve parmi "
+        f"{list(candidate_names)}. Champs disponibles: "
+        f"{[f.name() for f in fields]}",
+        "PoleAerien", MSG_WARNING
+    )
+    return -1
+
+
 def detect_etude_field(layer, context=""):
     """Auto-detecte le champ etude dans une couche vectorielle.
     
@@ -46,11 +76,25 @@ def detect_etude_field(layer, context=""):
     
     field_names = [f.name() for f in layer.fields()]
     
+    # ECART-09: les deux derniers patterns ('^nom$', '^zone$') sont des
+    # catchalls ambigus qui peuvent matcher des champs non-etude (ex. `nom`
+    # sur APPUIS.shp FIBEES = numero d'appui). On loggue un warning quand
+    # ces patterns se declenchent pour tracer l'ambiguite.
+    _CATCHALL_PATTERNS = {r'^nom$', r'^name$', r'^zone$', r'^decoupage$'}
+
     for pattern in _ETUDE_FIELD_PATTERNS:
         for field_name in field_names:
             if re.match(pattern, field_name, re.IGNORECASE):
+                if pattern in _CATCHALL_PATTERNS:
+                    QgsMessageLog.logMessage(
+                        f"[{context or 'detect_etude_field'}] Champ etude "
+                        f"detecte via pattern catchall '{pattern}' -> "
+                        f"'{field_name}'. Verifier qu'il s'agit bien d'un "
+                        f"nom d'etude et non d'un autre usage.",
+                        "PoleAerien", MSG_WARNING
+                    )
                 return field_name
-    
+
     QgsMessageLog.logMessage(
         f"[{context or 'detect_etude_field'}] Aucun champ etude detecte. Champs: {field_names}",
         "PoleAerien", MSG_WARNING
@@ -176,7 +220,10 @@ def validate_same_crs(ref_layer, other_layer, context=""):
         other_crs = other_layer.crs().authid() or other_layer.crs().toWkt()
         raise ValueError(
             f"[{context}] CRS incoherent: {ref_layer.name()}={ref_crs} vs "
-            f"{other_layer.name()}={other_crs}"
+            f"{other_layer.name()}={other_crs}. "
+            f"Reprojeter la couche en {ref_crs} avant analyse (ex. outil "
+            f"Reprojeter une couche de QGIS, ou passer par un export "
+            f"shapefile reprojetes)."
         )
     _crs_validated_pairs.add(pair)
 
@@ -235,7 +282,9 @@ def extraire_poteaux_etude(
     
     total_couche = infra_pt_pot.featureCount()
     req_pot = QgsFeatureRequest()
-    req_pot.setFilterExpression(f"inf_type LIKE '{pot_type_filter}'")
+    # Egalite stricte (pas de wildcards attendus dans pot_type_filter).
+    # LIKE sans wildcard est equivalent a '=' mais moins clair.
+    req_pot.setFilterExpression(f"inf_type = '{pot_type_filter}'")
     req_pot.setOrderBy(QgsFeatureRequest.OrderBy(
         [QgsFeatureRequest.OrderByClause('inf_type', ascending=True)]))
     req_etude = QgsFeatureRequest()
@@ -250,25 +299,40 @@ def extraire_poteaux_etude(
         "PoleAerien", MSG_INFO
     )
     
-    # Index champ commentaire pour detection terrain prive
-    idx_commentaire = infra_pt_pot.fields().indexFromName('commentaire')
+    # Index champ commentaire pour detection terrain prive.
+    # Essaye plusieurs noms : 'commentaire' (PostgreSQL) puis 'commentair'
+    # (tronque DBF a 10 chars sur shapefile).
+    idx_commentaire = _index_from_names(
+        infra_pt_pot, ('commentaire', 'commentair'), context
+    )
     
     # Collecter tous les fid trouves dans au moins une etude
     fids_dans_etude = set()
     
     dico_etude = {}
     dico_prives = {}
-    
+    # Detection des doublons en une seule passe (ECART-07).
+    doublons = []
+    _noms_vus = set()
+
     for feat_etude in etude.getFeatures(req_etude):
+        nom_etude = feat_etude[colonne_etude]
+
+        # Doublon de nom d'etude (independant de la geometrie).
+        if nom_etude in _noms_vus:
+            if nom_etude not in doublons:
+                doublons.append(nom_etude)
+        else:
+            _noms_vus.add(nom_etude)
+
         if not feat_etude.hasGeometry():
             continue
-        
+
         liste_pot = []
         liste_priv = []
-        nom_etude = feat_etude[colonne_etude]
         geom_etude = feat_etude.geometry().buffer(_ETUDE_POLYGON_BUFFER_M, 5)
         bbox = geom_etude.boundingBox()
-        
+
         for fid in idx_pot.intersects(bbox):
             feat_pot = poteaux_dict[fid]
             if geom_etude.contains(feat_pot.geometry()):
@@ -278,12 +342,12 @@ def extraire_poteaux_etude(
                     fids_dans_etude.add(fid)
                     if idx_commentaire >= 0 and est_terrain_prive(feat_pot[idx_commentaire]):
                         liste_priv.append(raw_inf)
-        
+
         if liste_pot:
             dico_etude.setdefault(nom_etude, []).extend(liste_pot)
         if liste_priv:
             dico_prives.setdefault(nom_etude, []).extend(liste_priv)
-    
+
     # Poteaux hors etude = poteaux valides non trouves dans aucune etude
     hors_etude = []
     for fid, feat_pot in poteaux_dict.items():
@@ -291,17 +355,6 @@ def extraire_poteaux_etude(
             raw_inf = feat_pot["inf_num"]
             if raw_inf and raw_inf != NULL:
                 hors_etude.append(raw_inf)
-    
-    # Doublons etudes
-    doublons = []
-    _vus = set()
-    for _f in etude.getFeatures(req_etude):
-        _v = _f[colonne_etude]
-        if _v in _vus:
-            if _v not in doublons:
-                doublons.append(_v)
-        else:
-            _vus.add(_v)
     
     # Index complet: tous les inf_num normalises de la couche (in + hors etude)
     # Permet de distinguer "absent QGIS" vs "hors perimetre etude"

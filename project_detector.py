@@ -219,6 +219,10 @@ _C6_DIR_PATTERNS = [
 _GESPOT_DIR_PATTERNS = [
     r'^GSPOT$',
     r'^GESPOT$',
+    r'^ETUDE[\s_-]*GSPOT$',
+    r'^ETUDE[\s_-]*GESPOT$',
+    r'^DONNEES[\s_-]*GSPOT$',
+    r'^DONNEES[\s_-]*GESPOT$',
 ]
 
 # GraceTHD signature files: any directory containing these IS a GraceTHD dir
@@ -239,6 +243,7 @@ _EXPECTED_NAMES = {
     'C6 annexe': 'Fichier Excel contenant "C6" ou dossier "C6" / "Annexe C6" avec un .xlsx dedans',
     'C3A': 'Fichier Excel contenant "C3A" ou dossier "C3A" / "Annexe C3A" avec un .xlsx dedans',
     'GraceTHD': 'Dossier contenant t_noeud.shp + t_cableline.shp (nom du dossier libre, detection par contenu)',
+    'GESPOT': 'Dossier nomme: GSPOT, GESPOT, ETUDE GSPOT, ETUDE GESPOT, DONNEES GSPOT, DONNEES GESPOT',
 }
 
 # Fichiers GraceTHD requis pour validation
@@ -493,6 +498,14 @@ def _build_diagnostics(result: DetectionResult, project_root: str) -> List[tuple
             if c3a_like:
                 hint += f"\nDossier(s) C3A-like trouves (sans Excel dedans?): {', '.join(c3a_like)}"
         diags.append(('C3A', hint))
+
+    if not result.has_gespot:
+        hint = _EXPECTED_NAMES['GESPOT']
+        if dirs:
+            gs_like = [d for d in dirs if 'gspot' in d.lower() or 'gespot' in d.lower()]
+            if gs_like:
+                hint += f"\nDossier(s) GESPOT-like trouves (nom non reconnu?): {', '.join(gs_like)}"
+        diags.append(('GESPOT', hint))
 
     return diags
 

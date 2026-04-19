@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <!-- Electric Pole - Professional Icon for QGIS Plugin -->
+  <!-- ST-AIR (sous-traitant) - ambre/orange pour distinguer du plugin principal -->
   <defs>
     <linearGradient id="poleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" style="stop-color:#1e3a5f"/>
-      <stop offset="50%" style="stop-color:#2563eb"/>
-      <stop offset="100%" style="stop-color:#1e3a5f"/>
+      <stop offset="0%" style="stop-color:#78350f"/>
+      <stop offset="50%" style="stop-color:#f59e0b"/>
+      <stop offset="100%" style="stop-color:#78350f"/>
     </linearGradient>
   </defs>
   
@@ -13,24 +13,30 @@
   <rect x="29" y="12" width="6" height="48" rx="1" fill="url(#poleGrad)"/>
   
   <!-- Top crossarm -->
-  <rect x="12" y="14" width="40" height="4" rx="1" fill="#1e3a5f"/>
+  <rect x="12" y="14" width="40" height="4" rx="1" fill="#78350f"/>
   
   <!-- Middle crossarm -->
-  <rect x="18" y="26" width="28" height="3" rx="1" fill="#1e3a5f"/>
+  <rect x="18" y="26" width="28" height="3" rx="1" fill="#78350f"/>
   
-  <!-- Insulators top - Jaune foncé/doré -->
-  <circle cx="16" cy="16" r="2.5" fill="#d97706"/>
-  <circle cx="32" cy="16" r="2.5" fill="#d97706"/>
-  <circle cx="48" cy="16" r="2.5" fill="#d97706"/>
+  <!-- Insulators top - blanc/creme pour contraste -->
+  <circle cx="16" cy="16" r="2.5" fill="#fef3c7" stroke="#78350f" stroke-width="0.5"/>
+  <circle cx="32" cy="16" r="2.5" fill="#fef3c7" stroke="#78350f" stroke-width="0.5"/>
+  <circle cx="48" cy="16" r="2.5" fill="#fef3c7" stroke="#78350f" stroke-width="0.5"/>
   
   <!-- Insulators middle -->
-  <circle cx="22" cy="27.5" r="2" fill="#d97706"/>
-  <circle cx="42" cy="27.5" r="2" fill="#d97706"/>
+  <circle cx="22" cy="27.5" r="2" fill="#fef3c7" stroke="#78350f" stroke-width="0.5"/>
+  <circle cx="42" cy="27.5" r="2" fill="#fef3c7" stroke="#78350f" stroke-width="0.5"/>
   
   <!-- Power lines hint -->
-  <path d="M4 16 Q10 18 16 16" stroke="#f59e0b" stroke-width="1.5" fill="none" stroke-linecap="round"/>
-  <path d="M48 16 Q54 18 60 16" stroke="#f59e0b" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M4 16 Q10 18 16 16" stroke="#b45309" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M48 16 Q54 18 60 16" stroke="#b45309" stroke-width="1.5" fill="none" stroke-linecap="round"/>
   
   <!-- Ground base -->
-  <path d="M24 60 L32 52 L40 60" stroke="#1e3a5f" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M24 60 L32 52 L40 60" stroke="#78350f" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Badge ST pour identifier visuellement la version sous-traitant -->
+  <g>
+    <circle cx="50" cy="50" r="11" fill="#f59e0b" stroke="#78350f" stroke-width="1.5"/>
+    <text x="50" y="54" font-family="Arial, sans-serif" font-size="10" font-weight="700" text-anchor="middle" fill="#78350f">ST</text>
+  </g>
 </svg>

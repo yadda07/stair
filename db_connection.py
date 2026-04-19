@@ -3,9 +3,16 @@ Module de connexion PostgreSQL pour Police C6 v2.0
 Connexion automatique via les credentials QGIS existants
 """
 
-import psycopg2
 import time
-from psycopg2 import sql
+
+try:
+    import psycopg2
+    from psycopg2 import sql as psycopg2_sql
+    _HAS_PSYCOPG2 = True
+except ImportError:
+    psycopg2 = None
+    psycopg2_sql = None
+    _HAS_PSYCOPG2 = False
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from qgis.core import QgsSettings, QgsMessageLog, Qgis, QgsDataSourceUri
@@ -144,6 +151,14 @@ class DatabaseConnection:
         Retry avec backoff exponentiel (3 tentatives : immediate, 1s, 2s).
         Circuit breaker : apres 3 echecs consecutifs, skip pendant 60s.
         """
+        if not _HAS_PSYCOPG2:
+            QgsMessageLog.logMessage(
+                "psycopg2 non installe : connexion PostgreSQL impossible. "
+                "Installer via : pip install psycopg2-binary",
+                "PoleAerien", MSG_CRITICAL
+            )
+            return False
+
         if self.is_connected():
             return True
 
@@ -236,7 +251,7 @@ class DatabaseConnection:
             cursor = self.connection.cursor()
             
             # Exécuter la fonction avec le SRO
-            query = sql.SQL("SELECT *, ST_AsText(geom) as geom_wkt FROM rip_avg_nge.fddcpi2(%s)")
+            query = psycopg2_sql.SQL("SELECT *, ST_AsText(geom) as geom_wkt FROM rip_avg_nge.fddcpiax(%s)")
             cursor.execute(query, (sro,))
             
             rows = cursor.fetchall()
@@ -271,14 +286,14 @@ class DatabaseConnection:
                 segments.append(segment)
             
             QgsMessageLog.logMessage(
-                f"fddcpi2({sro}): {len(segments)} segments de câbles récupérés",
+                f"fddcpiax({sro}): {len(segments)} segments de câbles récupérés",
                 "PoleAerien", MSG_INFO
             )
             return segments
             
         except Exception as e:
             QgsMessageLog.logMessage(
-                f"Erreur exécution fddcpi2: {e}",
+                f"Erreur exécution fddcpiax: {e}",
                 "PoleAerien", MSG_WARNING
             )
             try:
@@ -355,7 +370,7 @@ class DatabaseConnection:
         cursor = None
         try:
             cursor = self.connection.cursor()
-            query = sql.SQL(
+            query = psycopg2_sql.SQL(
                 "SELECT gid, noe_type, noe_usage, inf_num, ST_AsText(geom) as geom_wkt "
                 "FROM rip_avg_nge.bpe WHERE sro = %s"
             )
@@ -417,7 +432,7 @@ class DatabaseConnection:
         cursor = None
         try:
             cursor = self.connection.cursor()
-            query = sql.SQL(
+            query = psycopg2_sql.SQL(
                 "SELECT gid, ST_AsText(geom) as geom_wkt "
                 "FROM rip_avg_nge.attaches WHERE sro = %s"
             )

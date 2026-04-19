@@ -2,31 +2,37 @@
 # Mandatory items:
 
 [general]
-name=Pôle Aérien
+name=ST-AIR
 qgisMinimumVersion=3.28
 qgisMaximumVersion=4.99
-description=Contrôle qualité, comparaison et MAJ des poteaux aériens FTTH (FT/BT). Rapport unifié multi-modules.
-version=3.1.0
-author=NGE-ES
-email=yadda@nge-es.fr
+description=Controle qualite des livrables sous-traitants FTTH aerien. Analyse croisee shapefiles + Excel + CSV, rapport unifie multi-modules.
+version=3.2.0
+author=ST-AIR
+email=support@st-air.local
 
-about=Plugin QGIS de contrôle qualité, comparaison et mise à jour des données de poteaux aériens dans le cadre des projets FTTH. Supporte NGE (BDD PostgreSQL) et Axione (GraceTHD).
+about=Plugin QGIS pour sous-traitants FTTH : verifie la coherence des livrables aeriens (poteaux, cables, boitiers) en croisant les shapefiles fournis avec les fichiers Excel de terrain (CAP_FT, COMAC, C6) et les exports CSV GSPOT. Tout fonctionne en local, sur le dossier du projet, sans connexion a un serveur distant.
 
-    7 modules d'analyse :
-    - MAJ BD : Import Excel FT-BT KO, MAJ SQL directe PostgreSQL
-    - Vérification CAP_FT : Poteaux FT QGIS vs Fiches Appuis
-    - GESPOT vs C6 : Comparaison CSV GESPOT vs Excel C6, 11 critères
-    - Vérification COMAC : Poteaux BT, câbles, boîtiers, portées PCM, schémas techniques
-    - C6 vs BD : Annexes C6 vs base QGIS
-    - Police C6 : Analyse détaillée C6 vs BDD (câbles, boîtiers, attaches)
-    - C6-C3A-C7 vs BD : Croisement annexes contractuelles
+    5 modules d'analyse (chaque module produit une feuille dans un rapport Excel unique) :
+    - MAJ BD : import des fichiers Excel FT-BT KO, preparation des modifications a appliquer sur le shapefile des poteaux.
+    - Verification CAP_FT : poteaux FT du shapefile vs fiches d'appuis CAP_FT.
+    - Verification COMAC : poteaux BT, cables, boitiers, portees, schemas PCM vs fichiers COMAC.
+    - GESPOT vs C6 : comparaison CSV GESPOT (exports terrain) vs Excel C6 (declarations), 11 criteres.
+    - C6 vs BD : annexes C6 (Orange) vs shapefile des poteaux.
 
-    Rapport Excel unifié avec tableau de bord, glossaire et dictionnaire de données ISO/IEC 11179.
+    Le sous-traitant ouvre son dossier de livrable. Le plugin detecte automatiquement les sous-dossiers (CAP FT, COMAC, BASE DE DONNEES, CSV GSPOT). L'utilisateur choisit les modules a executer. Le plugin genere un rapport Excel unifie avec un tableau de bord KPI, le detail par anomalie et un glossaire metier.
 
-    Tables requises : infra_pt_pot, etude_cap_ft, etude_comac. GraceTHD pour Axione.
+    Entrees attendues (dans le dossier de projet) :
+    - Shapefiles : infra_pt_pot.shp, etude_cap_ft.shp, etude_comac.shp, cables.shp, bpe.shp (CRS Lambert93 EPSG:2154).
+    - Excel CAP_FT : fichiers *FicheAppui*.xlsx fournis par le terrain.
+    - Excel COMAC : fichiers *ExportComac*.xlsx.
+    - Excel C6 : annexes C6 Orange au format standard.
+    - CSV GSPOT : exports terrain UTF-8, separateur ';', 68 colonnes.
+    - Excel FT-BT KO (optionnel) : fichier recap des poteaux a modifier.
 
-tracker=https://github.com/asoumare/PoleAerien/issues
-repository=https://github.com/asoumare/PoleAerien
+    Sortie : un fichier Excel nomme `rapport_<SRO>_<date>.xlsx` place dans le dossier du projet.
+
+tracker=https://example.org/st-air/issues
+repository=https://example.org/st-air
 
 # End of mandatory metadata
 
@@ -34,62 +40,50 @@ repository=https://github.com/asoumare/PoleAerien
 hasProcessingProvider=no
 
 changelog=
-    3.1.0 (2026-03) - Compatibilité QGIS 4.0 (Qt6/PyQt6)
-        - Couche compat.py : résolution enums Qt5/Qt6 au chargement
-        - Fix import sip (PyQt6.sip)
-        - Fix enums Qt non qualifiés (QFrame, QEvent, QTextCursor, QDialogButtonBox)
+    3.2.0 (2026-04) - Renommage ST-AIR, documentation sous-traitant
+        - Plugin renomme ST-AIR (Sous-Traitant AERIEN)
+        - Guide sous-traitant complet (docs/GUIDE_SOUS_TRAITANT.md)
+        - README autonome a la racine
+        - Metadata : suppression des references serveur, recentrage usage local
+        - Corrections qgis_utils : fallback noms de champs (commentaire/commentair),
+          filtre egalite stricte, detection doublons en une passe, message CRS
+          explicite, warning sur patterns catchall. Cf. ECARTS.md.
+        - 46 tests automatises non-regression sur livrable reel.
+    3.1.0 (2026-03) - Compatibilite QGIS 4.0 (Qt6/PyQt6)
+        - Couche compat.py : resolution enums Qt5/Qt6 au chargement
+        - Fix import sip (PyQt6.sip), fix enums Qt non qualifies
         - metadata.txt : qgisMaximumVersion=4.99
-        - Compatible QGIS 3.28 a 4.99 (PyQt5 >= 5.15 et PyQt6)
-    3.0.0 (2026-03) - Rapport unifié, schémas techniques, dictionnaire de données
-        - Schémas techniques polaires des appuis depuis fichiers PCM (Matplotlib)
-        - Dictionnaire de données ISO/IEC 11179 + glossaire 33 termes
-        - Valeurs de référence CAPFT (Bases) : 17 listes officielles
-        - Comparaison portées PCM vs BDD/GraceTHD (feuille COMAC_PORTEES)
-        - Module GESPOT vs C6 : 11 critères, règles BR-01 à BR-07
-        - Comparaison PCM vs BDD : matching multi-stratégie supports + câbles
-        - Vérification boîtiers COMAC vs BPE
-        - Fix faux doublons COMAC inter-communes (keep_commune)
-        - Fix câbles souterrains GraceTHD comptés par erreur (posemode)
-        - Fix câbles recalés : détection via attaches
-        - Cache fddcpi2/SRO/appuis_wkb/CRS inter-modules
-        - Connexion unique comac_db_reader (6 connexions PG -> 1)
-        - Rapport unifié en tâche background (UnifiedReportExportTask)
-    2.5.0 (2026-02) - GraceTHD, mode projet, interface V2
-        - Pipeline GraceTHD complet (poteaux, câbles, BPE depuis SHP+CSV)
-        - Détection auto BE type (NGE/Axione) via GraceTHD ou BDD
-        - Mode projet : SRO depuis nom dossier, couches PostgreSQL directes
-        - Chargement couches asynchrone (background thread)
-        - SRO éditable dans l'interface
-        - Détection inline multi-candidats (COMAC, CAP FT, C6, C3A, C7)
-        - Filtrage câbles gras dans C6 Excel (bold font)
-        - Rapport unifié multi-modules avec TABLEAU DE BORD
-        - Preflight checks global avant exécution batch
-        - Interface V2 : remplacement complet ancienne UI, thème natif Qt
-        - Suppression ancienne interface (11 fichiers)
-        - Fix comptage câbles physiques COMAC (GROUP BY GID)
-        - Fix routage fddcpi2 -> fddcpiax pour Axione
-    2.3.0 (2026-02) - Corrections performance, architecture workflows
-        - Déconstruction God Object PoleAerien.py (2700 -> 128 lignes)
-        - Couche workflows/ : 6 orchestrateurs dédiés
-        - Utils scindé : qgis_utils.py + core_utils.py
-        - Filtres spatiaux getFeatures() (-80% temps, -70% mémoire)
-        - Cleanup mémoire explicite (évite fuite 500 MB)
-        - Guards division par zéro, transactions atomiques, fix injection SQL
-        - Migration comac.gpkg -> PostgreSQL (schéma comac)
-    2.2.2 (2026-01) - Refonte architecturale
-        - Threading QGIS conforme, index spatial, protection injection
-    2.0.0 (2025)
-        - Refonte complète de l'interface
-        - Ajout module Police C6 et comparaison C6/C3A/C7
-    1.0.0 (2022-03)
-        - Version initiale (Vérification COMAC/CAP_FT)
+        - Compatible QGIS 3.28 a 4.99
+    3.0.0 (2026-03) - Rapport unifie, schemas PCM, dictionnaire de donnees
+        - Schemas techniques polaires des appuis (Matplotlib) depuis fichiers PCM
+        - Dictionnaire de donnees ISO/IEC 11179 + glossaire
+        - Comparaison portees PCM vs shapefile (feuille COMAC_PORTEES)
+        - Module GESPOT vs C6 : 11 criteres
+        - Verification boitiers COMAC vs BPE
+        - Cache inter-modules (SRO, appuis, CRS) pour perf
+        - Rapport unifie en tache background non bloquante
+    2.5.0 (2026-02) - GraceTHD, detection projet, interface V2
+        - Pipeline GraceTHD (poteaux, cables, BPE depuis SHP + CSV)
+        - Detection automatique du dossier projet
+        - Chargement asynchrone des couches
+        - SRO editable dans l'interface
+        - Interface V2 : theme natif Qt, QSplitter, QgsCollapsibleGroupBox
+        - Preflight checks avant chaque batch
+    2.3.0 (2026-02) - Performance et architecture
+        - Decomposition du point d'entree (2700 -> 128 lignes)
+        - Workflows/ : 6 orchestrateurs dedies
+        - Filtres spatiaux (-80% temps, -70% memoire)
+        - Cleanup memoire explicite
+        - Transactions atomiques pour les MAJ
+    2.0.0 (2025) - Refonte interface, Police C6, C6/C3A/C7
+    1.0.0 (2022) - Version initiale (CAP_FT, COMAC)
 
 # Tags are comma separated with spaces allowed
-tags=poteau, poteaux, ENEDIS, FTTH, fibre optique, CAP_FT, COMAC, C6, C3A, contrôle qualité, BT, FT, GraceTHD, aérien, sous-traitant, Excel, analyse
+tags=FTTH, fibre optique, poteau, aerien, sous-traitant, controle qualite, CAP_FT, COMAC, C6, GESPOT, Excel, shapefile, analyse
 
-homepage=https://github.com/asoumare/PoleAerien
+homepage=https://example.org/st-air
 category=Vector
-icon=icon.png
+icon=images/icon.svg
 
 # experimental flag
 experimental=False
@@ -99,4 +93,3 @@ deprecated=False
 
 # If the plugin can run on QGIS Server.
 server=False
-

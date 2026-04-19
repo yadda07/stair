@@ -5,6 +5,7 @@
 
 
 import os
+import re
 
 import openpyxl
 
@@ -119,37 +120,13 @@ class Comac:
 
         
 
-        # Split par "P-" (séparateur = fin de référence + début de la suivante)
+        # Chaque reference commence par L, suivie de chiffres-chiffres, optionnellement -P
 
-        parts = valeur.split('P-')
+        # Ex: L1092-13-P, L1092-15 (sans -P)
 
-        
+        # Gere les concatenations avec ou sans tiret: L1092-13-P-L1092-14-P ou L1092-13-PL1092-14-P
 
-        references = []
-
-        for part in parts:
-
-            part = part.strip()
-
-            if not part:
-
-                continue
-
-            # Réajouter le "P" final (retiré par le split)
-
-            ref = part + 'P' if not part.upper().endswith('P') else part
-
-            # Nettoyer tiret initial éventuel
-
-            ref = ref.lstrip('-').strip()
-
-            if ref:
-
-                references.append(ref)
-
-        
-
-        return references
+        return re.findall(r'L\d+-\d+(?:-P)?', valeur, re.IGNORECASE)
 
 
 
@@ -275,6 +252,8 @@ class Comac:
         dicoVerifSecu = {}  # Résultats vérifications sécurité
 
         dicoCablesParAppui = {}  # {appui_norm → [refs_cables]} pour vérif CabCOMAC
+
+        dicoEtudeParAppui = {}  # {appui_norm → etude_name} pour colonne NOM ETUDE
 
         dicoBoitierParAppui = {}  # {appui_norm → True} pour appuis avec boîtier=oui
 
@@ -601,6 +580,10 @@ class Comac:
 
                                     dicoCablesParAppui[appui].extend(refs)
 
+                                if appui not in dicoEtudeParAppui:
+
+                                    dicoEtudeParAppui[appui] = etude_name
+
                             fichiers_valides += 1
 
 
@@ -624,7 +607,7 @@ class Comac:
             "PoleAerien", MSG_INFO
         )
 
-        return fichiersComacEnDoublons, impossibiliteDelireFichier, dicoPoteauBt_SousTraitant, dicoVerifSecu, dicoCablesParAppui, dicoBoitierParAppui, dicoCoordsPoteaux
+        return fichiersComacEnDoublons, impossibiliteDelireFichier, dicoPoteauBt_SousTraitant, dicoVerifSecu, dicoCablesParAppui, dicoBoitierParAppui, dicoCoordsPoteaux, dicoEtudeParAppui
 
 
 
@@ -1437,7 +1420,7 @@ class Comac:
 
             headers_cables = [
 
-                "APPUI", "NB CABLES COMAC", "REFS COMAC", "CAPAS COMAC",
+                "APPUI", "NOM ETUDE", "NB CABLES COMAC", "REFS COMAC", "CAPAS COMAC",
 
                 "NB CABLES BDD", "CAPAS BDD", "STATUT", "MESSAGE"
 
@@ -1457,27 +1440,29 @@ class Comac:
 
             feuille_cables.column_dimensions["A"].width = 20
 
-            feuille_cables.column_dimensions["B"].width = 18
+            feuille_cables.column_dimensions["B"].width = 30
 
-            feuille_cables.column_dimensions["C"].width = 40
+            feuille_cables.column_dimensions["C"].width = 18
 
-            feuille_cables.column_dimensions["D"].width = 25
+            feuille_cables.column_dimensions["D"].width = 40
 
-            feuille_cables.column_dimensions["E"].width = 18
+            feuille_cables.column_dimensions["E"].width = 25
 
-            feuille_cables.column_dimensions["F"].width = 25
+            feuille_cables.column_dimensions["F"].width = 18
 
-            feuille_cables.column_dimensions["G"].width = 15
+            feuille_cables.column_dimensions["G"].width = 25
 
-            feuille_cables.column_dimensions["H"].width = 60
+            feuille_cables.column_dimensions["H"].width = 15
+
+            feuille_cables.column_dimensions["I"].width = 60
 
             if has_boitier:
-
-                feuille_cables.column_dimensions["I"].width = 18
 
                 feuille_cables.column_dimensions["J"].width = 18
 
                 feuille_cables.column_dimensions["K"].width = 18
+
+                feuille_cables.column_dimensions["L"].width = 18
 
             
 
@@ -1491,19 +1476,21 @@ class Comac:
 
                 feuille_cables.cell(row=ligne_cab, column=1, value=entry.get('num_appui', ''))
 
-                feuille_cables.cell(row=ligne_cab, column=2, value=entry.get('nb_cables_comac', 0))
+                feuille_cables.cell(row=ligne_cab, column=2, value=entry.get('nom_etude', ''))
 
-                feuille_cables.cell(row=ligne_cab, column=3, value=entry.get('cables_comac', ''))
+                feuille_cables.cell(row=ligne_cab, column=3, value=entry.get('nb_cables_comac', 0))
 
-                feuille_cables.cell(row=ligne_cab, column=4, value='+'.join(entry.get('capas_comac', [])))
+                feuille_cables.cell(row=ligne_cab, column=4, value=entry.get('cables_comac', ''))
 
-                feuille_cables.cell(row=ligne_cab, column=5, value=entry.get('nb_cables_bdd', 0))
+                feuille_cables.cell(row=ligne_cab, column=5, value='+'.join(entry.get('capas_comac', [])))
 
-                feuille_cables.cell(row=ligne_cab, column=6, value='+'.join(str(c) for c in entry.get('capas_bdd', [])))
+                feuille_cables.cell(row=ligne_cab, column=6, value=entry.get('nb_cables_bdd', 0))
 
-                feuille_cables.cell(row=ligne_cab, column=7, value=statut)
+                feuille_cables.cell(row=ligne_cab, column=7, value='+'.join(str(c) for c in entry.get('capas_bdd', [])))
 
-                feuille_cables.cell(row=ligne_cab, column=8, value=entry.get('message', ''))
+                feuille_cables.cell(row=ligne_cab, column=8, value=statut)
+
+                feuille_cables.cell(row=ligne_cab, column=9, value=entry.get('message', ''))
 
                 
 
@@ -1517,6 +1504,10 @@ class Comac:
 
                     color = red_color
 
+                elif statut == 'ECART_PEP':
+
+                    color = orange_color
+
                 elif statut.startswith('ABSENT'):
 
                     color = orange_color
@@ -1529,7 +1520,7 @@ class Comac:
 
                 if color:
 
-                    feuille_cables.cell(row=ligne_cab, column=7).fill = openpyxl.styles.PatternFill(
+                    feuille_cables.cell(row=ligne_cab, column=8).fill = openpyxl.styles.PatternFill(
 
                         fill_type='solid', fgColor=color)
 
@@ -1545,11 +1536,11 @@ class Comac:
 
                     boitier_statut = entry.get('boitier_statut', '')
 
-                    feuille_cables.cell(row=ligne_cab, column=9, value=boitier_val)
+                    feuille_cables.cell(row=ligne_cab, column=10, value=boitier_val)
 
-                    feuille_cables.cell(row=ligne_cab, column=10, value=bpe_type)
+                    feuille_cables.cell(row=ligne_cab, column=11, value=bpe_type)
 
-                    feuille_cables.cell(row=ligne_cab, column=11, value=boitier_statut)
+                    feuille_cables.cell(row=ligne_cab, column=12, value=boitier_statut)
 
                     
 
@@ -1557,7 +1548,7 @@ class Comac:
 
                         boitier_err_color = openpyxl.styles.colors.Color(rgb='FF6B6B')
 
-                        for col_b in range(9, 12):
+                        for col_b in range(10, 13):
 
                             feuille_cables.cell(row=ligne_cab, column=col_b).fill = openpyxl.styles.PatternFill(
 
@@ -1565,7 +1556,7 @@ class Comac:
 
                     elif boitier_statut == 'OK':
 
-                        for col_b in range(9, 12):
+                        for col_b in range(10, 13):
 
                             feuille_cables.cell(row=ligne_cab, column=col_b).fill = openpyxl.styles.PatternFill(
 

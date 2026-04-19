@@ -16,7 +16,13 @@ from .compat import MSG_INFO, MSG_WARNING, MSG_CRITICAL, FIELD_TYPE_STRING
 
 from .project_detector import DetectionResult
 from .db_layer_loader import DbLayerLoader
-from .qgis_utils import detect_etude_field as _detect_etude_field, reset_crs_cache, show_feature_count
+from .qgis_utils import (
+    detect_etude_field as _detect_etude_field,
+    extraire_poteaux_etude,
+    reset_crs_cache,
+    show_feature_count,
+)
+from .core_utils import normalize_appui_num
 from .report_export_task import UnifiedReportExportTask
 from .batch_extractor import BatchDataExtractor
 
@@ -312,7 +318,8 @@ class BatchOrchestrator(QObject):
         self._dlg.set_running(True)
 
         # Modules qui n'ont besoin d'aucune couche QGIS ni BDD
-        _FILE_ONLY_MODULES = {'gespot_c6'}
+        # Note: gespot_c6 utilise infra_pt_pot + etude_cap_ft pour la colonne ETUDE
+        _FILE_ONLY_MODULES = set()
         needs_layers = set(module_keys) - _FILE_ONLY_MODULES
 
         # Project mode: load layers from DB asynchronously, then start batch
@@ -1004,9 +1011,9 @@ class BatchOrchestrator(QObject):
         mods = set(module_keys)
         layers = [
             ("infra_pt_pot", self._lyr_pot(),
-             mods & {'capft', 'comac', 'c6bd', 'police_c6', 'maj'}),
+             mods & {'capft', 'comac', 'c6bd', 'police_c6', 'maj', 'gespot_c6'}),
             ("etude_cap_ft", self._lyr_capft(),
-             mods & {'capft', 'c6bd', 'police_c6'}),
+             mods & {'capft', 'c6bd', 'police_c6', 'gespot_c6'}),
             ("etude_comac", self._lyr_comac(),
              mods & {'comac'}),
         ]
@@ -1747,7 +1754,12 @@ class BatchOrchestrator(QObject):
             cb(False, str(err))
 
     def _launch_gespot_c6(self, on_done):
-        """Lance le module GESPOT vs C6 (pur fichier-fichier, zéro couche QGIS)."""
+        """Lance le module GESPOT vs C6.
+
+        Si les couches QGIS (infra_pt_pot + etude_cap_ft) sont disponibles,
+        construit un etude_map pour annoter chaque poteau avec son nom d'etude
+        ou 'HORS ETUDE'. Sinon, le module tourne en pur fichier-fichier.
+        """
         self._done_callbacks['gespot_c6'] = on_done
         det = self._detection()
 
@@ -1760,6 +1772,8 @@ class BatchOrchestrator(QObject):
         if not self._gespot_wf:
             on_done(False, "GespotWorkflow non initialise")
             return
+
+        etude_map = self._build_gespot_etude_map()
 
         self._safe_connect_once(
             self._gespot_wf.analysis_finished, self._on_gespot_c6_done
@@ -1775,7 +1789,50 @@ class BatchOrchestrator(QObject):
             gespot_dir=det.gespot_dir,
             c6_dir=det.c6_dir,
             export_dir=det.export_dir,
+            etude_map=etude_map,
         )
+
+    def _build_gespot_etude_map(self):
+        """Construit {normalized_inf_num: etude_name ou 'HORS ETUDE'}.
+
+        Utilise infra_pt_pot + etude_cap_ft si disponibles.
+        Retourne {} si les couches ne sont pas chargees.
+        """
+        lyr_pot = self._lyr_pot()
+        lyr_cap = self._lyr_capft()
+        if not lyr_pot or not lyr_cap:
+            return {}
+        col_cap = self._auto_field(lyr_cap)
+        if not col_cap:
+            return {}
+        try:
+            _, hors_etude, dico_etude, _, _, _ = extraire_poteaux_etude(
+                lyr_pot.name(), lyr_cap.name(), col_cap,
+                'POT-%', 'GESPOT',
+            )
+            etude_map = {}
+            for nom_etude, inf_nums in dico_etude.items():
+                for raw_inf in inf_nums:
+                    key = normalize_appui_num(raw_inf)
+                    if key:
+                        etude_map[key] = nom_etude
+            for raw_inf in hors_etude:
+                key = normalize_appui_num(raw_inf)
+                if key and key not in etude_map:
+                    etude_map[key] = 'HORS ETUDE'
+            QgsMessageLog.logMessage(
+                f"[GESPOT] etude_map: {len(etude_map)} poteaux "
+                f"({sum(1 for v in etude_map.values() if v != 'HORS ETUDE')} en etude, "
+                f"{sum(1 for v in etude_map.values() if v == 'HORS ETUDE')} hors etude)",
+                'PoleAerien', MSG_INFO,
+            )
+            return etude_map
+        except Exception as exc:
+            QgsMessageLog.logMessage(
+                f"[GESPOT] Impossible de construire etude_map: {exc}",
+                'PoleAerien', MSG_WARNING,
+            )
+            return {}
 
     def _on_gespot_c6_done(self, result):
         self._batch_results['gespot_c6'] = result

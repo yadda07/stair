@@ -87,6 +87,18 @@ except AttributeError:
     MSG_SUCCESS = Qgis.Success
 
 # ---------------------------------------------------------------------------
+# Qgis.GeometryType (remplace QgsWkbTypes.GeometryType deprece)
+# ---------------------------------------------------------------------------
+try:
+    GEOM_POINT = Qgis.GeometryType.Point
+    GEOM_LINE = Qgis.GeometryType.Line
+    GEOM_POLYGON = Qgis.GeometryType.Polygon
+except AttributeError:
+    GEOM_POINT = 0
+    GEOM_LINE = 1
+    GEOM_POLYGON = 2
+
+# ---------------------------------------------------------------------------
 # QgsMapLayerProxyModel / Qgis.LayerFilter
 # ---------------------------------------------------------------------------
 try:
@@ -115,13 +127,13 @@ except AttributeError:
 # ---------------------------------------------------------------------------
 from qgis.PyQt.QtCore import QVariant
 
-try:
+if IS_QGIS4:
     from qgis.PyQt.QtCore import QMetaType
     FIELD_TYPE_STRING = QMetaType.Type.QString
     FIELD_TYPE_INT = QMetaType.Type.Int
     FIELD_TYPE_DOUBLE = QMetaType.Type.Double
     FIELD_TYPE_LONGLONG = QMetaType.Type.LongLong
-except (ImportError, AttributeError):
+else:
     FIELD_TYPE_STRING = QVariant.String
     FIELD_TYPE_INT = QVariant.Int
     FIELD_TYPE_DOUBLE = QVariant.Double
