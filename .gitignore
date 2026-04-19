@@ -1,13 +1,25 @@
-﻿PoleAerien_old/
-*.md
-!README.md
+﻿# Legacy tree
+PoleAerien_old/
+*_old.py
+
+# Python bytecode
 __pycache__/
 *.pyc
-*_old.py
-GRACE_APD_DTR_*/
 
-# Test data / personal folders
+# Private project data (not shipped)
+GRACE_APD_DTR_*/
 COMAC/
 exemple_gespot/
+
+# Editor / test caches
 .vscode/
 .pytest_cache/
+
+# QGIS binary style database (regenerated locally)
+symbology-style.db
+
+# Internal working notes (kept local, not part of the release)
+BACKLOG_ST-AIR.md
+ECARTS.md
+PCM_VS_BDD.md
+RAPPORT*.md
