@@ -1,22 +1,28 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 Workflow pour l'analyse Police C6 v2.0
 
-NOUVELLE LOGIQUE (fddcpi2):
-1. Récupérer SRO depuis couche QGIS
-2. Charger câbles découpés via fddcpi2 (PostgreSQL)
-3. Intersectionner câbles avec appuis
-4. Comparer avec Annexe C6 (nombre + capacités)
-5. Générer rapport anomalies
-
-Plus de GraceTHD - tout vient de la fonction PostgreSQL fddcpi2.
+LOGIQUE:
+1. Recuperer SRO depuis couche QGIS
+2. Charger cables recales depuis cache GPKG
+3. Intersectionner cables avec appuis
+4. Comparer avec Annexe C6 (nombre + capacites)
+5. Generer rapport anomalies
 """
 
 from qgis.PyQt.QtCore import QObject, pyqtSignal
 from qgis.core import Qgis, QgsMessageLog, QgsProject, QgsVectorLayer, NULL
 from ..compat import MSG_INFO, MSG_WARNING, MSG_CRITICAL, FIELD_TYPE_STRING, FIELD_TYPE_INT, FIELD_TYPE_DOUBLE, FIELD_TYPE_LONGLONG
 from ..PoliceC6 import PoliceC6, PoliceC6Cancelled
-from ..db_connection import extract_sro_from_layer
+from ..qgis_utils import extract_sro_from_layer
 from ..cable_analyzer import extraire_appuis_wkb
 from ..qgis_utils import get_layer_safe, detect_etude_field as _detect_etude_field, show_feature_count
 from ..async_tasks import PoliceC6Task, run_async_task
@@ -161,12 +167,15 @@ class PoliceWorkflow(QObject):
         idx = layer.fields().indexFromName(colonne_etude)
         if idx < 0:
             return []
-        
-        for feat in layer.getFeatures():
-            val = feat[colonne_etude]
+
+        from qgis.core import QgsFeatureRequest
+        from ..compat import FR_NO_GEOMETRY
+        req = QgsFeatureRequest().setSubsetOfAttributes([idx]).setFlags(FR_NO_GEOMETRY)
+        for feat in layer.getFeatures(req):
+            val = feat[idx]
             if val and val != NULL:
                 etudes.add(str(val).strip())
-        
+
         return sorted(list(etudes))
 
     def run_analysis_auto_browse(self, params):
@@ -175,7 +184,7 @@ class PoliceWorkflow(QObject):
         
         ARCHITECTURE ASYNC:
         1. Main thread: Extract QGIS data (appuis, SRO, liste fichiers C6)
-        2. Worker thread: PostgreSQL + comparaison + Excel
+        2. Worker thread: comparaison cables GPKG + Excel
         
         Args:
             params (dict): Paramètres d'analyse
@@ -267,11 +276,11 @@ class PoliceWorkflow(QObject):
             return
 
         self.message_received.emit(f"SRO: {sro}", "grey")
-        # Appuis WKB: toujours extraire sans commune (Police C6 compare
-        # avec C6 Excel qui n'a pas de suffixe /commune).
-        # Ne pas reutiliser le cache COMAC qui est avec commune.
+        # Appuis WKB: reutiliser appuis_wkb_plain si pre-extrait en passe unique
         appuis_data = []
-        if layer_appuis:
+        if sro_appuis_cache and sro_appuis_cache.get('appuis_wkb_plain') is not None:
+            appuis_data = sro_appuis_cache['appuis_wkb_plain']
+        elif layer_appuis:
             _t_appuis = time.perf_counter()
             appuis_data = extraire_appuis_wkb(layer_appuis[0])
             PerfLogger.record('police_c6', 'appuis_wkb_extract',
@@ -281,9 +290,9 @@ class PoliceWorkflow(QObject):
                 f"[PERF] Police C6 appuis_wkb_extract: "
                 f"{int((time.perf_counter()-_t_appuis)*1000)}ms ({len(appuis_data)} appuis)", "grey"
             )
-        
-        # === WORKER THREAD: Lancer tâche async ===
-        
+
+        # === WORKER THREAD: lecture C6 multi-thread + comparaison ===
+
         task_params = {
             'c6_files': c6_files_list,
             'sro': sro,
@@ -292,8 +301,6 @@ class PoliceWorkflow(QObject):
             'bpe_list_cache': params.get('bpe_list_cache'),
             'attaches_cache': params.get('attaches_cache'),
             'skip_individual_export': params.get('skip_individual_export', False),
-            'be_type': params.get('be_type', 'nge'),
-            'gracethd_dir': params.get('gracethd_dir', ''),
         }
         
         qgis_data = {
@@ -331,10 +338,9 @@ class PoliceWorkflow(QObject):
         # Charger les cables comme couche temporaire QGIS
         cables = result.get('cables', [])
         sro = result.get('sro', '')
-        be_type = result.get('be_type', 'nge')
         if cables:
             try:
-                self._load_cables_layer(cables, sro, be_type)
+                self._load_cables_layer(cables, sro)
             except Exception as e:
                 self.message_received.emit(f"[!] Erreur chargement couche câbles: {e}", "orange")
         
@@ -353,17 +359,15 @@ class PoliceWorkflow(QObject):
         stats = result.get('stats', [])
         self.message_received.emit(f"Analyse terminée: {len(stats)} études traitées", "green")
     
-    def _load_cables_layer(self, cables, sro, be_type='nge'):
-        """Charge les cables (fddcpi2 ou GraceTHD) comme couche temporaire dans QGIS."""
+    def _load_cables_layer(self, cables, sro):
+        """Charge les cables recales comme couche temporaire dans QGIS."""
         import warnings
         from qgis.core import (
             QgsVectorLayer, QgsFeature, QgsGeometry, QgsField, QgsProject
         )
         
-        # Nom de couche selon la source
         sro_safe = sro.replace('/', '_')
-        prefix = 'gracethd_cables' if be_type == 'axione' else 'fddcpi2'
-        layer_name = f"{prefix}_{sro_safe}"
+        layer_name = f"cables_recales_{sro_safe}"
         
         # Creer couche memoire LineString en Lambert 93
         layer = QgsVectorLayer(
@@ -585,12 +589,14 @@ class PoliceWorkflow(QObject):
         
         self.message_received.emit(f"  SRO: {sro}", "blue")
         
-        # 4. Analyser charge câbles via fddcpi2
+        # 4. Analyser charge cables (cache GPKG fourni en amont)
+        cables_cache = getattr(self, '_cables_cache', None) or (params.get('fddcpi_cables_cache') if isinstance(params, dict) else None)
         result = self.police_logic.analyser_charge_cables(
             sro=sro,
             layer_appuis=layer_appuis,
             donnees_c6=donnees_c6,
-            only_aerien=True
+            cables_cache=cables_cache,
+            only_aerien=True,
         )
         
         if result.erreur:

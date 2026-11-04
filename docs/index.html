@@ -661,6 +661,38 @@ section {
 }
 .chip.out { color: var(--amber-2); border-color: var(--amber-dim); }
 
+.module-visual {
+  min-height: 320px;
+  padding: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  color: var(--amber-2);
+  isolation: isolate;
+}
+.module-visual::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(circle at 20% 22%, rgba(245, 158, 11, 0.14), transparent 28%),
+    linear-gradient(135deg, transparent 0%, rgba(245, 158, 11, 0.07) 52%, transparent 100%);
+  pointer-events: none;
+}
+.module-visual svg {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  display: block;
+  transition: transform 0.4s var(--ease-out);
+}
+.module-visual:hover svg {
+  transform: translateX(4px);
+}
+
 /* ============================================================
    ARCHITECTURE TECHNIQUE (3 SVG switchables en tabs)
    ============================================================ */
@@ -2050,7 +2082,7 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
     <a href="#top" class="brand">
       <span class="brand-mark">ST</span>
       ST-AIR
-      <span class="brand-ver">v3.2.0</span>
+      <span class="brand-ver">v4.2.0</span>
     </a>
     <ul class="nav-links">
       <li><a href="#modules">Modules</a></li>
@@ -2082,7 +2114,7 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
     </p>
 
     <div class="hero-cta">
-      <a href="GUIDE_SOUS_TRAITANT.md" class="btn primary">
+      <a href="guide.html" class="btn primary">
         Guide sous-traitant
         <span class="arrow">-&gt;</span>
       </a>
@@ -2191,39 +2223,25 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
   <section id="modules">
     <div class="section-head reveal">
       <div class="section-kicker">01 // Modules d'analyse</div>
-      <h2>5 controles, 1 rapport Excel consolide.</h2>
+      <h2>4 controles, 1 rapport Excel consolide.</h2>
       <p>Chaque module examine une facette de votre livrable. Activez seulement ceux dont vous avez besoin : le rapport s'adapte a votre selection.</p>
     </div>
 
     <div class="modules">
       <article class="module-card reveal" data-delay="1">
         <span class="module-num">01</span>
-        <h3>MAJ BD</h3>
-        <div class="sub">Mise a jour poteaux</div>
-        <p>Prepare les modifications a appliquer au shapefile <code>infra_pt_pot</code> a partir de l'Excel <code>FT-BT KO</code> : etat, proprietaire, etiquettes.</p>
-        <div class="module-meta">
-          <span class="chip">infra_pt_pot</span>
-          <span class="chip">FT-BT KO.xlsx</span>
-          <span class="chip out">MAJ_FT</span>
-          <span class="chip out">MAJ_BT</span>
-        </div>
-      </article>
-
-      <article class="module-card reveal" data-delay="2">
-        <span class="module-num">02</span>
         <h3>Verification CAP_FT</h3>
         <div class="sub">Appuis fibre vs fiches Orange</div>
         <p>Croise les poteaux <code>POT-FT</code> avec les fiches d'appuis Orange. Detecte les absents, les hors-etude, les doublons et les ecarts de coordonnees.</p>
         <div class="module-meta">
           <span class="chip">etude_cap_ft</span>
           <span class="chip">FicheAppui_*.xlsx</span>
-          <span class="chip out">CAPFT_DETAIL</span>
-          <span class="chip out">CAPFT_RESUME</span>
+          <span class="chip out">CAPFT_ANALYSE</span>
         </div>
       </article>
 
-      <article class="module-card reveal" data-delay="3">
-        <span class="module-num">03</span>
+      <article class="module-card reveal" data-delay="2">
+        <span class="module-num">02</span>
         <h3>COMAC</h3>
         <div class="sub">Appuis BT, cables, boitiers</div>
         <p>Capacites FO, portees PCM vs distance reelle, boitiers fibre optique, appariement spatial cable-appui. Module le plus complet.</p>
@@ -2235,20 +2253,20 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
         </div>
       </article>
 
-      <article class="module-card reveal" data-delay="4">
-        <span class="module-num">04</span>
+      <article class="module-card reveal" data-delay="3">
+        <span class="module-num">03</span>
         <h3>GESPOT vs C6</h3>
         <div class="sub">11 criteres croises</div>
         <p>Compare les exports CSV GESPOT terrain aux declarations Excel C6 : hauteur, force, commune, proprietaire, etat, materiau, XY.</p>
         <div class="module-meta">
           <span class="chip">GSPOT/*.csv</span>
           <span class="chip">FTTH-*-ETUDE.xlsx</span>
-          <span class="chip out">GESPOT_C6</span>
+          <span class="chip out">GESPOT_ANALYSE</span>
         </div>
       </article>
 
-      <article class="module-card reveal" data-delay="5">
-        <span class="module-num">05</span>
+      <article class="module-card reveal" data-delay="4">
+        <span class="module-num">04</span>
         <h3>C6 vs BD</h3>
         <div class="sub">Cables gras C6 vs shapefile</div>
         <p>Confronte les annexes C6 Orange (cables <strong>en gras</strong> uniquement, nouveaux a poser) au shapefile des poteaux.</p>
@@ -2258,6 +2276,70 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
           <span class="chip out">C6BD_ANALYSE</span>
         </div>
       </article>
+
+      <div class="module-card module-visual reveal" data-delay="5">
+        <svg viewBox="0 0 420 320" role="img" aria-labelledby="moduleVisualTitle moduleVisualDesc" preserveAspectRatio="xMidYMid slice">
+          <title id="moduleVisualTitle">Poteaux connectes ST-AIR</title>
+          <desc id="moduleVisualDesc">Poteaux aeriens connectes par cables en perspective.</desc>
+          <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M-24 288 L27 256 L65 270 L116 226 L153 244 L205 198 L246 214 L295 174 L334 188 L386 146 L444 164 L444 340 L-24 340 Z" fill="currentColor" opacity="0.035" stroke="none"/>
+            <path d="M-24 309 L39 288 L101 276 L154 246 L215 229 L267 213 L326 190 L388 166 L444 154 L444 340 L-24 340 Z" fill="currentColor" opacity="0.045" stroke="none"/>
+            <path d="M34 74 C75 100 130 114 180 136 S252 164 291 182 S337 202 355 216" stroke-opacity="0.48" stroke-width="2.4"/>
+            <path d="M82 74 C122 102 171 117 218 136 S282 166 316 182 S354 207 374 216" stroke-opacity="0.40" stroke-width="2.1"/>
+            <path d="M136 74 C172 100 214 118 258 136 S316 168 342 182 S376 208 393 216" stroke-opacity="0.32" stroke-width="1.8"/>
+            <path d="M42 120 C91 146 137 157 184 176 S264 202 294 210 S340 228 360 236" stroke-opacity="0.30" stroke-width="1.9"/>
+            <path d="M124 120 C157 145 207 162 252 176 S309 199 338 210 S376 231 388 236" stroke-opacity="0.24" stroke-width="1.6"/>
+          </g>
+          <g fill="currentColor">
+            <g opacity="0.92">
+              <rect x="76" y="48" width="12" height="252" rx="3" opacity="0.30"/>
+              <rect x="18" y="70" width="128" height="9" rx="3" opacity="0.52"/>
+              <rect x="39" y="117" width="88" height="7" rx="3" opacity="0.45"/>
+              <circle cx="34" cy="74" r="5" opacity="0.64"/>
+              <circle cx="82" cy="74" r="5" opacity="0.80"/>
+              <circle cx="136" cy="74" r="5" opacity="0.64"/>
+              <circle cx="42" cy="120" r="4" opacity="0.58"/>
+              <circle cx="124" cy="120" r="4" opacity="0.58"/>
+            </g>
+            <g opacity="0.68">
+              <rect x="214" y="110" width="9" height="182" rx="3" opacity="0.30"/>
+              <rect x="174" y="132" width="88" height="7" rx="3" opacity="0.52"/>
+              <rect x="184" y="173" width="68" height="6" rx="3" opacity="0.42"/>
+              <circle cx="180" cy="136" r="4" opacity="0.62"/>
+              <circle cx="218" cy="136" r="4" opacity="0.78"/>
+              <circle cx="258" cy="136" r="4" opacity="0.62"/>
+              <circle cx="184" cy="176" r="3.4" opacity="0.54"/>
+              <circle cx="252" cy="176" r="3.4" opacity="0.54"/>
+            </g>
+            <g opacity="0.46">
+              <rect x="313" y="164" width="7" height="126" rx="2.5" opacity="0.30"/>
+              <rect x="288" y="179" width="56" height="5" rx="2" opacity="0.52"/>
+              <rect x="294" y="207" width="44" height="4" rx="2" opacity="0.42"/>
+              <circle cx="291" cy="182" r="3.2" opacity="0.62"/>
+              <circle cx="316" cy="182" r="3.2" opacity="0.76"/>
+              <circle cx="342" cy="182" r="3.2" opacity="0.62"/>
+              <circle cx="294" cy="210" r="2.7" opacity="0.52"/>
+              <circle cx="338" cy="210" r="2.7" opacity="0.52"/>
+            </g>
+            <g opacity="0.30">
+              <rect x="372" y="204" width="5" height="84" rx="2" opacity="0.30"/>
+              <rect x="354" y="214" width="40" height="4" rx="2" opacity="0.52"/>
+              <rect x="360" y="234" width="28" height="3" rx="1.5" opacity="0.42"/>
+              <circle cx="355" cy="216" r="2.5" opacity="0.62"/>
+              <circle cx="374" cy="216" r="2.5" opacity="0.76"/>
+              <circle cx="393" cy="216" r="2.5" opacity="0.62"/>
+              <circle cx="360" cy="236" r="2" opacity="0.52"/>
+              <circle cx="388" cy="236" r="2" opacity="0.52"/>
+            </g>
+          </g>
+          <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M78 79 L46 117 M86 79 L118 117" stroke-opacity="0.24" stroke-width="3.5"/>
+            <path d="M216 139 L190 173 M222 139 L246 173" stroke-opacity="0.20" stroke-width="2.6"/>
+            <path d="M314 184 L298 207 M319 184 L334 207" stroke-opacity="0.16" stroke-width="2"/>
+            <path d="M373 218 L362 234 M376 218 L386 234" stroke-opacity="0.12" stroke-width="1.6"/>
+          </g>
+        </svg>
+      </div>
     </div>
 
     <div class="callout success reveal">
@@ -2345,7 +2427,7 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
               <g class="node" data-node="src-xlsx" data-related="*">
                 <rect x="35" y="184" width="170" height="72" rx="10" fill="rgba(245,158,11,0.08)" stroke="#f59e0b" stroke-width="1.5"/>
                 <text x="120" y="208" text-anchor="middle" font-weight="600" fill="#fbbf24" font-size="12">EXCEL SUIVI</text>
-                <text x="120" y="226" text-anchor="middle" fill="#fcd34d" font-size="9">FT-BT KO, GC-BPE, COMAC</text>
+                <text x="120" y="226" text-anchor="middle" fill="#fcd34d" font-size="9">GC-BPE, COMAC</text>
                 <text x="120" y="241" text-anchor="middle" fill="#fde68a" font-size="8">openpyxl lecture</text>
               </g>
 
@@ -2402,7 +2484,7 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
               <g class="node" data-node="core-runner" data-related="*">
                 <rect x="275" y="340" width="170" height="48" rx="8" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1"/>
                 <text x="360" y="360" text-anchor="middle" font-weight="600" fill="#fbbf24" font-size="10">BatchRunner</text>
-                <text x="360" y="377" text-anchor="middle" fill="#fcd34d" font-size="8">Execution sequentielle 5 modules</text>
+                <text x="360" y="377" text-anchor="middle" fill="#fcd34d" font-size="8">Execution sequentielle 4 modules</text>
               </g>
 
               <g class="node" data-node="core-detect" data-related="*">
@@ -2415,7 +2497,7 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
               <g class="node" data-node="core-registry" data-related="*">
                 <rect x="265" y="476" width="190" height="56" rx="8" fill="rgba(148,163,184,0.08)" stroke="#94a3b8" stroke-width="1"/>
                 <text x="360" y="496" text-anchor="middle" font-weight="600" fill="#cbd5e1" font-size="10">module_registry.py</text>
-                <text x="360" y="512" text-anchor="middle" fill="#94a3b8" font-size="8">5 modules declares</text>
+                <text x="360" y="512" text-anchor="middle" fill="#94a3b8" font-size="8">4 modules declares</text>
                 <text x="360" y="525" text-anchor="middle" fill="#64748b" font-size="8">activation toggle-able</text>
               </g>
 
@@ -2432,89 +2514,75 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
               <path d="M 205 472 L 260 240" data-related="m-gespot m-c6bd"   stroke="#94a3b8" stroke-width="1.5" fill="none" opacity="0.45" stroke-dasharray="4 3"/>
               <path d="M 205 555 L 260 255" data-related="m-comac"           stroke="#94a3b8" stroke-width="1"   fill="none" opacity="0.35" stroke-dasharray="4 3"/>
 
-              <!-- ===== COLONNE 3 : WORKFLOWS (5 dans l'ordre d'execution) ===== -->
-              <g class="node" data-node="wf-maj" data-related="m-maj">
-                <rect x="530" y="100" width="270" height="54" rx="10" fill="rgba(245,158,11,0.12)" stroke="#f59e0b" stroke-width="1.5"/>
-                <text x="550" y="123" fill="#fbbf24" font-size="11" font-weight="600">MAJWorkflow</text>
-                <text x="550" y="141" fill="#fde68a" font-size="8">update shapefile depuis Excel FT-BT KO</text>
+              <!-- ===== COLONNE 3 : WORKFLOWS (4 dans l'ordre d'execution) ===== -->
+              <g class="node" data-node="wf-capft" data-related="m-capft">
+                <rect x="530" y="100" width="270" height="54" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
+                <text x="550" y="123" fill="#fbbf24" font-size="11" font-weight="600">CAPFTWorkflow</text>
+                <text x="550" y="141" fill="#fde68a" font-size="8">croisement appuis FT / fiches Orange</text>
                 <circle cx="770" cy="127" r="14" fill="#fbbf24"/>
                 <text x="770" y="131" text-anchor="middle" fill="#1a1100" font-size="10" font-weight="700">1</text>
               </g>
-              <g class="node" data-node="wf-capft" data-related="m-capft">
+              <g class="node" data-node="wf-comac" data-related="m-comac">
                 <rect x="530" y="168" width="270" height="54" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
-                <text x="550" y="191" fill="#fbbf24" font-size="11" font-weight="600">CAPFTWorkflow</text>
-                <text x="550" y="209" fill="#fde68a" font-size="8">croisement appuis FT / fiches Orange</text>
+                <text x="550" y="191" fill="#fbbf24" font-size="11" font-weight="600">COMACWorkflow</text>
+                <text x="550" y="209" fill="#fde68a" font-size="8">cables, boitiers, portees, verif NFC</text>
                 <circle cx="770" cy="195" r="14" fill="#fbbf24"/>
                 <text x="770" y="199" text-anchor="middle" fill="#1a1100" font-size="10" font-weight="700">2</text>
               </g>
-              <g class="node" data-node="wf-comac" data-related="m-comac">
+              <g class="node" data-node="wf-gspot" data-related="m-gespot">
                 <rect x="530" y="236" width="270" height="54" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
-                <text x="550" y="259" fill="#fbbf24" font-size="11" font-weight="600">COMACWorkflow</text>
-                <text x="550" y="277" fill="#fde68a" font-size="8">cables, boitiers, portees, verif NFC</text>
+                <text x="550" y="259" fill="#fbbf24" font-size="11" font-weight="600">GESPOTC6Workflow</text>
+                <text x="550" y="277" fill="#fde68a" font-size="8">11 criteres croises terrain x C6</text>
                 <circle cx="770" cy="263" r="14" fill="#fbbf24"/>
                 <text x="770" y="267" text-anchor="middle" fill="#1a1100" font-size="10" font-weight="700">3</text>
               </g>
-              <g class="node" data-node="wf-gspot" data-related="m-gespot">
+              <g class="node" data-node="wf-c6bd" data-related="m-c6bd">
                 <rect x="530" y="304" width="270" height="54" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
-                <text x="550" y="327" fill="#fbbf24" font-size="11" font-weight="600">GESPOTC6Workflow</text>
-                <text x="550" y="345" fill="#fde68a" font-size="8">11 criteres croises terrain x C6</text>
+                <text x="550" y="327" fill="#fbbf24" font-size="11" font-weight="600">C6BDWorkflow</text>
+                <text x="550" y="345" fill="#fde68a" font-size="8">cables en gras C6 vs shapefile</text>
                 <circle cx="770" cy="331" r="14" fill="#fbbf24"/>
                 <text x="770" y="335" text-anchor="middle" fill="#1a1100" font-size="10" font-weight="700">4</text>
               </g>
-              <g class="node" data-node="wf-c6bd" data-related="m-c6bd">
-                <rect x="530" y="372" width="270" height="54" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
-                <text x="550" y="395" fill="#fbbf24" font-size="11" font-weight="600">C6BDWorkflow</text>
-                <text x="550" y="413" fill="#fde68a" font-size="8">cables en gras C6 vs shapefile</text>
-                <circle cx="770" cy="399" r="14" fill="#fbbf24"/>
-                <text x="770" y="403" text-anchor="middle" fill="#1a1100" font-size="10" font-weight="700">5</text>
-              </g>
 
               <g>
-                <rect x="530" y="444" width="270" height="40" rx="8" fill="rgba(148,163,184,0.06)" stroke="rgba(148,163,184,0.2)" stroke-width="1" stroke-dasharray="3 2"/>
-                <text x="665" y="461" text-anchor="middle" fill="#94a3b8" font-size="9" font-weight="600">Execution sequentielle</text>
-                <text x="665" y="475" text-anchor="middle" fill="#64748b" font-size="8">dependances inter-modules gerees</text>
+                <rect x="530" y="376" width="270" height="40" rx="8" fill="rgba(148,163,184,0.06)" stroke="rgba(148,163,184,0.2)" stroke-width="1" stroke-dasharray="3 2"/>
+                <text x="665" y="393" text-anchor="middle" fill="#94a3b8" font-size="9" font-weight="600">Execution sequentielle</text>
+                <text x="665" y="407" text-anchor="middle" fill="#64748b" font-size="8">dependances inter-modules gerees</text>
               </g>
 
               <!-- fleches Core -> Workflows (chacune liee a son module destinataire) -->
-              <path d="M 460 195 L 530 127" data-related="m-maj"    stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#a-arrow)" opacity="0.7" class="flow-dash"/>
-              <path d="M 460 205 L 530 195" data-related="m-capft"  stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#a-arrow)" opacity="0.7" class="flow-dash"/>
-              <path d="M 460 215 L 530 263" data-related="m-comac"  stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#a-arrow)" opacity="0.7" class="flow-dash"/>
-              <path d="M 460 225 L 530 331" data-related="m-gespot" stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#a-arrow)" opacity="0.7" class="flow-dash"/>
-              <path d="M 460 235 L 530 399" data-related="m-c6bd"   stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#a-arrow)" opacity="0.7" class="flow-dash"/>
+              <path d="M 460 205 L 530 127" data-related="m-capft"  stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#a-arrow)" opacity="0.7" class="flow-dash"/>
+              <path d="M 460 215 L 530 195" data-related="m-comac"  stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#a-arrow)" opacity="0.7" class="flow-dash"/>
+              <path d="M 460 225 L 530 263" data-related="m-gespot" stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#a-arrow)" opacity="0.7" class="flow-dash"/>
+              <path d="M 460 235 L 530 331" data-related="m-c6bd"   stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#a-arrow)" opacity="0.7" class="flow-dash"/>
 
               <!-- ===== COLONNE 4 : MODULES METIER (hoverable, focus-mode) ===== -->
-              <g class="node arch-module" data-node="m-maj" data-related="m-maj" tabindex="0">
-                <rect x="870" y="100" width="290" height="54" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="2"/>
-                <text x="1015" y="123" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">MAJ_BD</text>
-                <text x="1015" y="141" text-anchor="middle" fill="#fde68a" font-size="9">Maj_Ft_Bt.py (local)</text>
-              </g>
               <g class="node arch-module" data-node="m-capft" data-related="m-capft" tabindex="0">
-                <rect x="870" y="168" width="290" height="54" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="2"/>
-                <text x="1015" y="191" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">CAP_FT</text>
-                <text x="1015" y="209" text-anchor="middle" fill="#fde68a" font-size="9">CapFt.py | strip_e normalisation</text>
+                <rect x="870" y="100" width="290" height="54" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="2"/>
+                <text x="1015" y="123" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">CAP_FT</text>
+                <text x="1015" y="141" text-anchor="middle" fill="#fde68a" font-size="9">CapFt.py | strip_e normalisation</text>
               </g>
               <g class="node arch-module" data-node="m-comac" data-related="m-comac" tabindex="0">
-                <rect x="870" y="236" width="290" height="54" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="2"/>
-                <text x="1015" y="259" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">COMAC</text>
-                <text x="1015" y="277" text-anchor="middle" fill="#fde68a" font-size="9">Comac.py + security_rules.py</text>
+                <rect x="870" y="168" width="290" height="54" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="2"/>
+                <text x="1015" y="191" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">COMAC</text>
+                <text x="1015" y="209" text-anchor="middle" fill="#fde68a" font-size="9">Comac.py + security_rules.py</text>
               </g>
               <g class="node arch-module" data-node="m-gespot" data-related="m-gespot" tabindex="0">
-                <rect x="870" y="304" width="290" height="54" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="2"/>
-                <text x="1015" y="327" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">GESPOT_C6</text>
-                <text x="1015" y="345" text-anchor="middle" fill="#fde68a" font-size="9">gspot_c6_compare.py | 11 criteres</text>
+                <rect x="870" y="236" width="290" height="54" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="2"/>
+                <text x="1015" y="259" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">GESPOT_C6</text>
+                <text x="1015" y="277" text-anchor="middle" fill="#fde68a" font-size="9">gspot_c6_compare.py | 11 criteres</text>
               </g>
               <g class="node arch-module" data-node="m-c6bd" data-related="m-c6bd" tabindex="0">
-                <rect x="870" y="372" width="290" height="54" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="2"/>
-                <text x="1015" y="395" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">C6BD_ANALYSE</text>
-                <text x="1015" y="413" text-anchor="middle" fill="#fde68a" font-size="9">C6_vs_Bd.py | QgsSpatialIndex</text>
+                <rect x="870" y="304" width="290" height="54" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="2"/>
+                <text x="1015" y="327" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">C6BD_ANALYSE</text>
+                <text x="1015" y="345" text-anchor="middle" fill="#fde68a" font-size="9">C6_vs_Bd.py | QgsSpatialIndex</text>
               </g>
 
               <!-- fleches Workflows -> Modules (chacune liee au module d'arrivee) -->
-              <path d="M 800 127 L 870 127" data-related="m-maj"    stroke="#f59e0b" stroke-width="2.5" fill="none" marker-end="url(#a-arrow)" opacity="0.85" class="flow-dash"/>
-              <path d="M 800 195 L 870 195" data-related="m-capft"  stroke="#f59e0b" stroke-width="2.5" fill="none" marker-end="url(#a-arrow)" opacity="0.85" class="flow-dash"/>
-              <path d="M 800 263 L 870 263" data-related="m-comac"  stroke="#f59e0b" stroke-width="2.5" fill="none" marker-end="url(#a-arrow)" opacity="0.85" class="flow-dash"/>
-              <path d="M 800 331 L 870 331" data-related="m-gespot" stroke="#f59e0b" stroke-width="2.5" fill="none" marker-end="url(#a-arrow)" opacity="0.85" class="flow-dash"/>
-              <path d="M 800 399 L 870 399" data-related="m-c6bd"   stroke="#f59e0b" stroke-width="2.5" fill="none" marker-end="url(#a-arrow)" opacity="0.85" class="flow-dash"/>
+              <path d="M 800 127 L 870 127" data-related="m-capft"  stroke="#f59e0b" stroke-width="2.5" fill="none" marker-end="url(#a-arrow)" opacity="0.85" class="flow-dash"/>
+              <path d="M 800 195 L 870 195" data-related="m-comac"  stroke="#f59e0b" stroke-width="2.5" fill="none" marker-end="url(#a-arrow)" opacity="0.85" class="flow-dash"/>
+              <path d="M 800 263 L 870 263" data-related="m-gespot" stroke="#f59e0b" stroke-width="2.5" fill="none" marker-end="url(#a-arrow)" opacity="0.85" class="flow-dash"/>
+              <path d="M 800 331 L 870 331" data-related="m-c6bd"   stroke="#f59e0b" stroke-width="2.5" fill="none" marker-end="url(#a-arrow)" opacity="0.85" class="flow-dash"/>
 
               <!-- ===== OUTPUT BAND (bas) ===== -->
               <rect x="240" y="625" width="940" height="75" rx="14" fill="rgba(245,158,11,0.08)" stroke="rgba(245,158,11,0.3)" stroke-width="1.5"/>
@@ -2568,7 +2636,7 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
               <g>
                 <rect x="40" y="640" width="120" height="48" rx="18" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1.5"/>
                 <text x="100" y="660" text-anchor="middle" fill="#fbbf24" font-size="14" font-weight="700">ST-AIR</text>
-                <text x="100" y="678" text-anchor="middle" fill="#fcd34d" font-size="9">v3.2.0 sous-traitant</text>
+                <text x="100" y="678" text-anchor="middle" fill="#fcd34d" font-size="9">v4.2.0 sous-traitant</text>
               </g>
             </svg>
           </div>
@@ -2622,7 +2690,7 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
                 <circle cx="550" cy="570" r="1"   fill="#fcd34d" opacity="0.35"/>
               </g>
 
-              <!-- Orbit rings concentriques (labels supprimes : etaient dans les cercles Maj WF et MAJ_BD, legende en bas est suffisante) -->
+              <!-- Orbit rings concentriques (legende en bas) -->
               <ellipse cx="500" cy="300" rx="110" ry="110" fill="none" stroke="rgba(245,158,11,0.22)" stroke-width="1.5"/>
               <ellipse cx="500" cy="300" rx="220" ry="220" fill="none" stroke="rgba(245,158,11,0.15)" stroke-width="1" stroke-dasharray="6 4"/>
               <ellipse cx="500" cy="300" rx="300" ry="270" fill="none" stroke="rgba(148,163,184,0.1)" stroke-width="1" stroke-dasharray="3 5"/>
@@ -2631,14 +2699,12 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
               <circle cx="500" cy="300" r="150" fill="url(#c-core-glow)" opacity="0.6"/>
 
               <!-- Lignes CORE -> workflows (pointillees amber) -->
-              <path d="M 500 225 L 500 190" data-related="m-maj"    stroke="rgba(245,158,11,0.55)" stroke-width="1.5" stroke-dasharray="3 2"/>
               <path d="M 555 260 L 605 266" data-related="m-capft"  stroke="rgba(245,158,11,0.55)" stroke-width="1.5" stroke-dasharray="3 2"/>
               <path d="M 540 340 L 565 389" data-related="m-comac"  stroke="rgba(245,158,11,0.55)" stroke-width="1.5" stroke-dasharray="3 2"/>
               <path d="M 460 340 L 435 389" data-related="m-gespot" stroke="rgba(245,158,11,0.55)" stroke-width="1.5" stroke-dasharray="3 2"/>
               <path d="M 445 260 L 395 266" data-related="m-c6bd"   stroke="rgba(245,158,11,0.55)" stroke-width="1.5" stroke-dasharray="3 2"/>
 
               <!-- Lignes workflows -> modules (animes) -->
-              <path d="M 500 190 L 500 100" data-related="m-maj"    stroke="#f59e0b" stroke-width="2" opacity="0.55" class="flow-dash"/>
               <path d="M 605 266 L 704 236" data-related="m-capft"  stroke="#f59e0b" stroke-width="2" opacity="0.55" class="flow-dash"/>
               <path d="M 565 389 L 629 474" data-related="m-comac"  stroke="#f59e0b" stroke-width="2" opacity="0.55" class="flow-dash"/>
               <path d="M 435 389 L 371 474" data-related="m-gespot" stroke="#f59e0b" stroke-width="2" opacity="0.55" class="flow-dash"/>
@@ -2655,13 +2721,7 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
                 <text x="500" y="322" text-anchor="middle" fill="#4a3608" font-size="8">Orchestrateur local</text>
               </g>
 
-              <!-- ===== WORKFLOWS (inner orbit, 5 points pentagone) ===== -->
-              <!-- Haut : MajWorkflow -->
-              <g class="node" data-node="w-maj" data-related="m-maj">
-                <circle cx="500" cy="190" r="28" fill="rgba(251,191,36,0.2)" stroke="#f59e0b" stroke-width="2"/>
-                <text x="500" y="193" text-anchor="middle" fill="#fbbf24" font-size="9" font-weight="600">Maj</text>
-                <text x="500" y="203" text-anchor="middle" fill="#fde68a" font-size="7">WF</text>
-              </g>
+              <!-- ===== WORKFLOWS (inner orbit, 4 points) ===== -->
               <!-- Top-right : CapFtWorkflow -->
               <g class="node" data-node="w-capft" data-related="m-capft">
                 <circle cx="605" cy="266" r="28" fill="rgba(251,191,36,0.2)" stroke="#f59e0b" stroke-width="2"/>
@@ -2688,20 +2748,7 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
               </g>
 
               <!-- ===== MODULES (outer orbit) ===== -->
-              <!-- M1 MAJ_BD (top) -->
-              <g class="node arch-module" data-node="m-maj" data-related="m-maj" tabindex="0" filter="url(#c-glow)">
-                <circle cx="500" cy="100" r="52" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="2"/>
-                <circle cx="500" cy="100" r="38" fill="rgba(245,158,11,0.28)" stroke="#fbbf24" stroke-width="1"/>
-                <text x="500" y="92" text-anchor="middle" font-weight="700" fill="#fbbf24" font-size="11">MAJ_BD</text>
-                <text x="500" y="108" text-anchor="middle" fill="#fcd34d" font-size="9">Maj_Ft_Bt.py</text>
-                <text x="500" y="122" text-anchor="middle" fill="#fde68a" font-size="8">shapefile update</text>
-              </g>
-              <g class="node" data-related="m-maj">
-                <circle cx="535" cy="65" r="11" fill="#fbbf24"/>
-                <text x="535" y="69" text-anchor="middle" fill="#1a1100" font-size="10" font-weight="700">1</text>
-              </g>
-
-              <!-- M2 CAP_FT (top-right) -->
+              <!-- M1 CAP_FT (top-right) -->
               <g class="node arch-module" data-node="m-capft" data-related="m-capft" tabindex="0" filter="url(#c-glow)">
                 <circle cx="704" cy="236" r="52" fill="rgba(245,158,11,0.12)" stroke="#f59e0b" stroke-width="2"/>
                 <circle cx="704" cy="236" r="38" fill="rgba(245,158,11,0.25)" stroke="#fbbf24" stroke-width="1"/>
@@ -2711,10 +2758,10 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
               </g>
               <g class="node" data-related="m-capft">
                 <circle cx="745" cy="208" r="11" fill="#fbbf24"/>
-                <text x="745" y="212" text-anchor="middle" fill="#1a1100" font-size="10" font-weight="700">2</text>
+                <text x="745" y="212" text-anchor="middle" fill="#1a1100" font-size="10" font-weight="700">1</text>
               </g>
 
-              <!-- M3 COMAC (bottom-right) -->
+              <!-- M2 COMAC (bottom-right) -->
               <g class="node arch-module" data-node="m-comac" data-related="m-comac" tabindex="0" filter="url(#c-glow)">
                 <circle cx="629" cy="474" r="52" fill="rgba(245,158,11,0.12)" stroke="#f59e0b" stroke-width="2"/>
                 <circle cx="629" cy="474" r="38" fill="rgba(245,158,11,0.25)" stroke="#fbbf24" stroke-width="1"/>
@@ -2724,10 +2771,10 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
               </g>
               <g class="node" data-related="m-comac">
                 <circle cx="670" cy="443" r="11" fill="#fbbf24"/>
-                <text x="670" y="447" text-anchor="middle" fill="#1a1100" font-size="10" font-weight="700">3</text>
+                <text x="670" y="447" text-anchor="middle" fill="#1a1100" font-size="10" font-weight="700">2</text>
               </g>
 
-              <!-- M4 GESPOT_C6 (bottom-left) -->
+              <!-- M3 GESPOT_C6 (bottom-left) -->
               <g class="node arch-module" data-node="m-gespot" data-related="m-gespot" tabindex="0" filter="url(#c-glow)">
                 <circle cx="371" cy="474" r="52" fill="rgba(245,158,11,0.12)" stroke="#f59e0b" stroke-width="2"/>
                 <circle cx="371" cy="474" r="38" fill="rgba(245,158,11,0.25)" stroke="#fbbf24" stroke-width="1"/>
@@ -2737,10 +2784,10 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
               </g>
               <g class="node" data-related="m-gespot">
                 <circle cx="330" cy="443" r="11" fill="#fbbf24"/>
-                <text x="330" y="447" text-anchor="middle" fill="#1a1100" font-size="10" font-weight="700">4</text>
+                <text x="330" y="447" text-anchor="middle" fill="#1a1100" font-size="10" font-weight="700">3</text>
               </g>
 
-              <!-- M5 C6BD_ANALYSE (top-left) -->
+              <!-- M4 C6BD_ANALYSE (top-left) -->
               <g class="node arch-module" data-node="m-c6bd" data-related="m-c6bd" tabindex="0" filter="url(#c-glow)">
                 <circle cx="296" cy="236" r="52" fill="rgba(245,158,11,0.12)" stroke="#f59e0b" stroke-width="2"/>
                 <circle cx="296" cy="236" r="38" fill="rgba(245,158,11,0.25)" stroke="#fbbf24" stroke-width="1"/>
@@ -2750,14 +2797,14 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
               </g>
               <g class="node" data-related="m-c6bd">
                 <circle cx="255" cy="208" r="11" fill="#fbbf24"/>
-                <text x="255" y="212" text-anchor="middle" fill="#1a1100" font-size="10" font-weight="700">5</text>
+                <text x="255" y="212" text-anchor="middle" fill="#1a1100" font-size="10" font-weight="700">4</text>
               </g>
 
               <!-- ===== SERVICES TRANSVERSAUX (1 lien courbe par service, sans croisement) ===== -->
 
-              <!-- dbf_reader (haut-gauche) -> lit le DBF (utilise par MAJ_BD, CAP_FT, C6BD) -->
-              <path d="M 156 80 Q 310 55 448 88" data-related="m-maj m-capft m-c6bd" stroke="rgba(148,163,184,0.45)" stroke-width="1" fill="none" stroke-dasharray="3 3"/>
-              <g class="node" data-node="s-dbf" data-related="m-maj m-capft m-c6bd">
+              <!-- dbf_reader (haut-gauche) -> lit le DBF (utilise par CAP_FT, C6BD) -->
+              <path d="M 156 80 Q 310 55 448 88" data-related="m-capft m-c6bd" stroke="rgba(148,163,184,0.45)" stroke-width="1" fill="none" stroke-dasharray="3 3"/>
+              <g class="node" data-node="s-dbf" data-related="m-capft m-c6bd">
                 <circle cx="130" cy="80" r="26" fill="rgba(148,163,184,0.1)" stroke="#94a3b8" stroke-width="1.5"/>
                 <text x="130" y="78" text-anchor="middle" fill="#cbd5e1" font-size="8" font-weight="600">dbf</text>
                 <text x="130" y="89" text-anchor="middle" fill="#94a3b8" font-size="7">_reader</text>
@@ -2816,7 +2863,7 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
               <!-- Stats panel (coin haut-droite, zone degagee de tout noeud et lien) -->
               <g>
                 <rect x="820" y="30" width="150" height="88" rx="8" fill="rgba(245,158,11,0.06)" stroke="rgba(245,158,11,0.22)" stroke-width="1"/>
-                <text x="895" y="50" text-anchor="middle" fill="#fbbf24" font-size="9" font-weight="600" letter-spacing="1">ARCHITECTURE v3.2</text>
+                <text x="895" y="50" text-anchor="middle" fill="#fbbf24" font-size="9" font-weight="600" letter-spacing="1">ARCHITECTURE v4.2.0</text>
                 <text x="840" y="70" fill="#94a3b8" font-size="8">Workflows:</text>
                 <text x="950" y="70" text-anchor="end" fill="#fcd34d" font-size="10" font-weight="700">5</text>
                 <text x="840" y="86" fill="#94a3b8" font-size="8">Modules metier:</text>
@@ -3177,7 +3224,7 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
 <span class="file">|   |-- NGE-B1L-00003-PA-1_ExportComac.xlsx</span>
 <span class="dir">|   |-- PCM/</span>                              <span class="cmt"># calculs PCM (optionnel)</span>
 <span class="file">|       |-- *.xml</span>
-<span class="file">|-- FT-BT KO B1L_00003.xlsx</span>                <span class="cmt"># recap MAJ (optionnel)</span>
+<span class="file">|-- livrable_&lt;SRO&gt;.zip | .gpkg</span>              <span class="cmt"># (opt.) livrable GeoPackage - bouton "Charger GPKG..."</span>
 <span class="hl">|-- rapport_63041_B1I_PMZ_00003_&lt;date&gt;.xlsx</span>   <span class="cmt"># genere par ST-AIR</span></div>
     </div>
 
@@ -3191,11 +3238,6 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
           </tr>
         </thead>
         <tbody>
-          <tr>
-            <td><strong>MAJ BD</strong></td>
-            <td><code>infra_pt_pot</code></td>
-            <td><code>FT-BT KO *.xlsx</code></td>
-          </tr>
           <tr>
             <td><strong>CAP_FT</strong></td>
             <td><code>infra_pt_pot</code>, <code>etude_cap_ft</code></td>
@@ -3236,18 +3278,17 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
     <h3 style="font-family: 'Space Grotesk'; font-size: 1.1rem; font-weight: 500; margin-bottom: 1.3rem; color: var(--text-2); letter-spacing: 0.02em;" class="reveal">Feuilles produites</h3>
 
     <div class="sheets reveal">
-      <div class="sheet"><div class="name">TABLEAU DE BORD</div><div class="desc">KPI par module, camemberts OK/KO, liens directs vers les feuilles detaillees.</div></div>
-      <div class="sheet"><div class="name">MAJ_FT / MAJ_BT</div><div class="desc">Modifications a appliquer, ligne par ligne : gid, champ, ancienne valeur, nouvelle.</div></div>
-      <div class="sheet"><div class="name">CAPFT_DETAIL</div><div class="desc">Statut par appui FT : OK, ABSENT QGIS, HORS ETUDE, DOUBLON.</div></div>
-      <div class="sheet"><div class="name">CAPFT_RESUME</div><div class="desc">Synthese chiffree CAP_FT : totaux par statut, taux de conformite.</div></div>
-      <div class="sheet"><div class="name">COMAC_DETAIL</div><div class="desc">Ligne par appui BT : boitier, cables, capacites, portees, statut global.</div></div>
+      <div class="sheet"><div class="name">TABLEAU DE BORD</div><div class="desc">KPI par module, taux de conformite, synthese d'audit et legende des statuts.</div></div>
+      <div class="sheet"><div class="name">CAPFT_ANALYSE</div><div class="desc">Statut par appui FT : OK, ABSENT QGIS, ABSENT FICHES APPUIS, HORS PERIMETRE.</div></div>
+      <div class="sheet"><div class="name">COMAC_ANALYSE</div><div class="desc">Ligne par appui BT : statut global, appariement spatial et explication detaillee.</div></div>
+      <div class="sheet"><div class="name">COMAC_SECURITE</div><div class="desc">Controle des regles de securite et hauteurs minimales NFC 11-201 par appui.</div></div>
       <div class="sheet"><div class="name">COMAC_CABLES</div><div class="desc">Anomalies cables : ecart capacite, cable declare absent, cable present non declare.</div></div>
-      <div class="sheet"><div class="name">COMAC_PORTEES</div><div class="desc">Portee PCM (XML) vs distance geometrique reelle (shapefile cable).</div></div>
-      <div class="sheet"><div class="name">GESPOT_C6</div><div class="desc">11 criteres croises GSPOT / C6, OK ou KO par appui avec valeur attendue / valeur trouvee.</div></div>
-      <div class="sheet"><div class="name">C6BD_ANALYSE</div><div class="desc">Cables en gras des annexes C6 vs shapefile. Detection des ecarts topologiques.</div></div>
-      <div class="sheet"><div class="name">GLOSSAIRE</div><div class="desc">21 termes metier expliques : SRO, CAP_FT, COMAC, C6, BPE, PMZ, NRO, PM, portee, etc.</div></div>
-      <div class="sheet"><div class="name">DICTIONNAIRE</div><div class="desc">Structure ISO/IEC 11179 : nom, type, longueur, description, exemple, par champ.</div></div>
-      <div class="sheet"><div class="name">COMAC_DESSIN_XX</div><div class="desc">Optionnel. Schemas polaires haute definition, un par appui COMAC verifie.</div></div>
+      <div class="sheet"><div class="name">COMAC_PORTEES</div><div class="desc">Portee PCM (XML) vs distance geometrique reelle (shapefile cable) et supports PCM_SUPPORTS.</div></div>
+      <div class="sheet"><div class="name">GESPOT_ANALYSE</div><div class="desc">11 criteres croises GSPOT / C6, plus feuilles GESPOT_ABSENT_* et GESPOT_ANOMALIES.</div></div>
+      <div class="sheet"><div class="name">C6BD_ANALYSE</div><div class="desc">Cables en gras des annexes C6 vs shapefile, hors perimetre et verif etudes.</div></div>
+      <div class="sheet"><div class="name">GLOSSAIRE</div><div class="desc">Optionnel. Termes metier expliques : SRO, CAP_FT, COMAC, C6, BPE, PMZ, NRO, portee, etc.</div></div>
+      <div class="sheet"><div class="name">DICTIONNAIRE</div><div class="desc">Optionnel. Structure ISO/IEC 11179 : module, feuille, colonne, type, definition, couleurs.</div></div>
+      <div class="sheet"><div class="name">D_01 .. D_XX</div><div class="desc">Optionnel. Planches graphiques haute definition des schemas polaires d'appuis COMAC.</div></div>
     </div>
 
     <h3 style="font-family: 'Space Grotesk'; font-size: 1.1rem; font-weight: 500; margin: 3rem 0 1.3rem; color: var(--text-2); letter-spacing: 0.02em;" class="reveal">Codes couleur uniformes</h3>
@@ -3348,7 +3389,7 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
     <div class="section-head reveal">
       <div class="section-kicker">07 // Foire aux questions</div>
       <h2>Les reponses rapides.</h2>
-      <p>Pour le detail, voir le <a href="GUIDE_SOUS_TRAITANT.md">guide sous-traitant complet</a>. Sinon contactez votre chef de projet.</p>
+      <p>Pour le detail, voir le <a href="guide.html">guide sous-traitant complet</a>. Sinon contactez votre chef de projet.</p>
     </div>
 
     <div class="faq">
@@ -3395,7 +3436,7 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
         <div class="acc-body"><div class="acc-body-inner">
           Selon les modules actives :
           <ul>
-            <li><code>infra_pt_pot</code> : obligatoire pour MAJ BD, CAP_FT, COMAC, C6 vs BD.</li>
+            <li><code>infra_pt_pot</code> : obligatoire pour CAP_FT, COMAC, C6 vs BD, Police C6.</li>
             <li><code>etude_cap_ft</code> : obligatoire pour CAP_FT.</li>
             <li><code>etude_comac</code>, <code>cables</code>, <code>bpe</code> : obligatoires pour COMAC.</li>
           </ul>
@@ -3509,15 +3550,15 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
   <div class="footer-inner">
     <div>
       <h5>// ST-AIR</h5>
-      <p>Plugin QGIS de controle qualite des livrables FTTH aerien. Version 3.2.0, compatible QGIS 3.28 LTR a 4.x.</p>
+      <p>Plugin QGIS de controle qualite des livrables FTTH aerien. Version 4.2.0, compatible QGIS 3.28 LTR a 4.x.</p>
       <p>Diffusion restreinte aux sous-traitants autorises du donneur d'ordre.</p>
     </div>
     <div>
       <h5>// Documentation</h5>
       <ul>
-        <li><a href="GUIDE_SOUS_TRAITANT.md">Guide sous-traitant</a></li>
-        <li><a href="../README.md">README projet</a></li>
-        <li><a href="index_legacy_nge.html">Archive v3.1</a></li>
+        <li><a href="guide.html">Guide sous-traitant</a></li>
+        <li><a href="#workflow">Sequence d'execution</a></li>
+        <li><a href="#rapport">Anatomie du rapport</a></li>
       </ul>
     </div>
     <div>
@@ -3532,7 +3573,7 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
   <div class="footer-bottom">
     <div class="sig">
       <span class="led"></span>
-      <span>2026.04 // SYSTEM OPERATIONAL // BUILD v3.2.0</span>
+      <span>2026.07 // SYSTEM OPERATIONAL // BUILD v4.2.0</span>
     </div>
     <div>&copy; 2026 ST-AIR</div>
   </div>
@@ -3995,19 +4036,18 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
   if (cmdkKey) cmdkKey.textContent = isMac ? '\u2318' : 'Ctrl';
 
   const commands = [
-    { group: 'Sections', icon: '01', title: "Modules d'analyse",         sub: '5 controles',             href: '#modules' },
+    { group: 'Sections', icon: '01', title: "Modules d'analyse",         sub: '4 controles',             href: '#modules' },
     { group: 'Sections', icon: '02', title: 'Architecture technique',    sub: '3 vues : flux, constellation, securite NFC', href: '#architecture' },
     { group: 'Sections', icon: '03', title: "Workflow d'execution",      sub: '5 etapes chronologiques', href: '#workflow' },
     { group: 'Sections', icon: '04', title: 'Structure du dossier',      sub: 'Anatomie attendue',       href: '#anatomy' },
     { group: 'Sections', icon: '05', title: 'Rapport Excel',             sub: 'Feuilles et codes',       href: '#rapport' },
     { group: 'Sections', icon: '06', title: 'Demonstration interactive', sub: 'Simulation live',         href: '#demo' },
     { group: 'Sections', icon: '07', title: 'FAQ',                        sub: 'Reponses rapides',        href: '#faq' },
-    { group: 'Modules',  icon: 'M1', title: 'MAJ BD',                     sub: 'Mise a jour des poteaux', href: '#modules' },
-    { group: 'Modules',  icon: 'M2', title: 'Verification CAP_FT',        sub: 'Appuis FT vs fiches Orange', href: '#modules' },
-    { group: 'Modules',  icon: 'M3', title: 'COMAC',                      sub: 'Cables, boitiers, portees', href: '#modules' },
-    { group: 'Modules',  icon: 'M4', title: 'GESPOT vs C6',               sub: '11 criteres croises',     href: '#modules' },
-    { group: 'Modules',  icon: 'M5', title: 'C6 vs BD',                   sub: 'Cables gras vs shapefile',href: '#modules' },
-    { group: 'Actions',  icon: '>_', title: 'Ouvrir le guide sous-traitant', sub: 'Documentation complete', href: 'GUIDE_SOUS_TRAITANT.md' },
+    { group: 'Modules',  icon: 'M1', title: 'Verification CAP_FT',        sub: 'Appuis FT vs fiches Orange', href: '#modules' },
+    { group: 'Modules',  icon: 'M2', title: 'COMAC',                      sub: 'Cables, boitiers, portees', href: '#modules' },
+    { group: 'Modules',  icon: 'M3', title: 'GESPOT vs C6',               sub: '11 criteres croises',     href: '#modules' },
+    { group: 'Modules',  icon: 'M4', title: 'C6 vs BD',                   sub: 'Cables gras vs shapefile',href: '#modules' },
+    { group: 'Actions',  icon: '>_', title: 'Ouvrir le guide sous-traitant', sub: 'Documentation complete', href: 'guide.html' },
     { group: 'Actions',  icon: 'R',  title: 'Lancer la demonstration',   sub: 'Simulation cote navigateur', href: '#demo', action: 'run-demo' },
     { group: 'Actions',  icon: 'S',  title: 'Activer les effets sonores', sub: 'WebAudio subtil',        action: 'toggle-sfx' },
     { group: 'Actions',  icon: 'Q',  title: 'Telecharger QGIS',           sub: 'qgis.org',               href: 'https://qgis.org/fr/site/forusers/download.html' },
@@ -4180,42 +4220,38 @@ body.has-cursor a, body.has-cursor button, body.has-cursor [data-cursor] { curso
   const kpiK = document.getElementById('kpiKoVal');
 
   const simScript = [
-    { k: 'head', d: 60,  p: 2,   t: 'Initialisation ST-AIR v3.2.0 // local mode',          s: 'Stage 1/6 - bootstrap' },
+    { k: 'head', d: 60,  p: 2,   t: 'Initialisation ST-AIR v4.2.0 // local mode',          s: 'Stage 1/5 - bootstrap' },
     { k: '',     d: 80,  p: 3,   t: 'QGIS 4.0.0 detected // Windows build'                },
     { k: 'ok',   d: 120, p: 6,   t: 'EPSG:2154 (Lambert-93) verifie sur toutes les couches' },
 
-    { k: 'head', d: 120, p: 8,   t: 'Scan du dossier projet',                              s: 'Stage 2/6 - scan' },
+    { k: 'head', d: 120, p: 8,   t: 'Scan du dossier projet',                              s: 'Stage 2/5 - scan' },
     { k: '',     d: 60,  p: 10,  t: 'Dossier racine : 63041-B1I-PMZ-00003'                },
     { k: 'ok',   d: 80,  p: 12,  t: 'SRO detecte : 63041/B1I/PMZ/00003'                   },
     { k: '',     d: 80,  p: 14,  t: 'BASE DE DONNEES/NGE/ : 6 shapefiles'                 },
-    { k: '',     d: 80,  p: 16,  t: 'CAP FT/ : 212 fiches d\'appuis Orange'               },
-    { k: '',     d: 80,  p: 18,  t: 'COMAC/ : 68 exports + 47 XML PCM'                    },
-    { k: 'ok',   d: 100, p: 20,  t: 'GSPOT/ : 1 CSV de 1284 lignes terrain'               },
+    { k: '',     d: 80,  p: 18,  t: 'CAP FT/ : 212 fiches d\'appuis Orange'               },
+    { k: '',     d: 80,  p: 20,  t: 'COMAC/ : 68 exports + 47 XML PCM'                    },
+    { k: 'ok',   d: 100, p: 22,  t: 'GSPOT/ : 1 CSV de 1284 lignes terrain'               },
 
-    { k: 'head', d: 150, p: 22,  t: 'Module MAJ_BD',                                        s: 'Stage 3/6 - MAJ_BD' },
-    { k: '',     d: 150, p: 26,  t: 'Excel FT-BT KO : 38 modifications detectees'         },
-    { k: 'ok',   d: 180, p: 30,  t: 'MAJ_BD OK - 38 ecritures preparees',                  kpi: { scanned: 38, ok: 38 } },
+    { k: 'head', d: 120, p: 26,  t: 'Module CAP_FT',                                        s: 'Stage 3/5 - CAP_FT' },
+    { k: '',     d: 200, p: 32,  t: 'Croisement poteaux FT x fiches Orange...'            },
+    { k: '',     d: 120, p: 38,  t: '[===>      ] 212 / 1284',                             kpi: { scanned: 250 } },
+    { k: '',     d: 120, p: 44,  t: '[=======>  ] 847 / 1284',                             kpi: { scanned: 885 } },
+    { k: 'warn', d: 100, p: 48,  t: 'E007743/JEAN : hors etude (distance 4.2m)',          kpi: { warn: 1 } },
+    { k: 'ok',   d: 180, p: 52,  t: 'CAP_FT OK - 204 conformes / 8 avertissements',       kpi: { scanned: 1284, ok: 242, warn: 8 } },
 
-    { k: 'head', d: 120, p: 33,  t: 'Module CAP_FT',                                        s: 'Stage 4/6 - CAP_FT' },
-    { k: '',     d: 200, p: 38,  t: 'Croisement poteaux FT x fiches Orange...'            },
-    { k: '',     d: 120, p: 42,  t: '[===>      ] 212 / 1284',                             kpi: { scanned: 250 } },
-    { k: '',     d: 120, p: 48,  t: '[=======>  ] 847 / 1284',                             kpi: { scanned: 885 } },
-    { k: 'warn', d: 100, p: 51,  t: 'E007743/JEAN : hors etude (distance 4.2m)',          kpi: { warn: 1 } },
-    { k: 'ok',   d: 180, p: 54,  t: 'CAP_FT OK - 204 conformes / 8 avertissements',       kpi: { scanned: 1284, ok: 242, warn: 8 } },
-
-    { k: 'head', d: 180, p: 58,  t: 'Module COMAC (parsing XLSX + PCM XML)',                s: 'Stage 5/6 - COMAC' },
+    { k: 'head', d: 180, p: 56,  t: 'Module COMAC (parsing XLSX + PCM XML)',                s: 'Stage 4/5 - COMAC' },
     { k: '',     d: 120, p: 62,  t: 'Boitiers BPE : 68 declares, 63 geolocalises'         },
-    { k: 'err',  d: 100, p: 65,  t: 'E010284 : boitier declare absent de bpe.shp',         kpi: { ko: 1 } },
-    { k: 'warn', d: 100, p: 68,  t: 'Cable L1092-12-P : ecart portee +23%',                kpi: { warn: 9 } },
-    { k: 'ok',   d: 180, p: 72,  t: 'COMAC OK - 57 conformes / 4 warns / 7 KO',            kpi: { ok: 299, warn: 12, ko: 7 } },
+    { k: 'err',  d: 100, p: 66,  t: 'E010284 : boitier declare absent de bpe.shp',         kpi: { ko: 1 } },
+    { k: 'warn', d: 100, p: 70,  t: 'Cable L1092-12-P : ecart portee +23%',                kpi: { warn: 9 } },
+    { k: 'ok',   d: 180, p: 74,  t: 'COMAC OK - 57 conformes / 4 warns / 7 KO',            kpi: { ok: 299, warn: 12, ko: 7 } },
 
-    { k: 'head', d: 150, p: 76,  t: 'Modules GESPOT_C6 + C6BD_ANALYSE',                    s: 'Stage 6/6 - cross-checks' },
-    { k: '',     d: 200, p: 82,  t: 'GESPOT : 11 criteres croises sur 1284 appuis'        },
-    { k: 'ok',   d: 180, p: 86,  t: 'GESPOT OK - 1239 conformes / 45 anomalies',          kpi: { ok: 1538, warn: 57, ko: 7 } },
-    { k: 'ok',   d: 180, p: 91,  t: 'C6BD OK - 31 cables analyses / aucun ecart'          },
+    { k: 'head', d: 150, p: 78,  t: 'Modules GESPOT_C6 + C6BD_ANALYSE',                    s: 'Stage 5/5 - cross-checks' },
+    { k: '',     d: 200, p: 84,  t: 'GESPOT : 11 criteres croises sur 1284 appuis'        },
+    { k: 'ok',   d: 180, p: 88,  t: 'GESPOT OK - 1239 conformes / 45 anomalies',          kpi: { ok: 1538, warn: 57, ko: 7 } },
+    { k: 'ok',   d: 180, p: 92,  t: 'C6BD OK - 31 cables analyses / aucun ecart'          },
 
-    { k: 'head', d: 200, p: 94,  t: 'Generation du rapport Excel',                          s: 'Finalisation' },
-    { k: '',     d: 180, p: 97,  t: 'Ecriture de 12 feuilles + TABLEAU DE BORD'           },
+    { k: 'head', d: 200, p: 95,  t: 'Generation du rapport Excel',                          s: 'Finalisation' },
+    { k: '',     d: 180, p: 97,  t: 'Ecriture de 11 feuilles + TABLEAU DE BORD'           },
     { k: 'ok',   d: 200, p: 100, t: 'rapport_63041_B1I_PMZ_00003_20260419.xlsx (2.4 MB)',   s: 'Audit termine' }
   ];
 

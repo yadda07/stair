@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 Workflow pour l'analyse GESPOT vs C6.
 
@@ -32,16 +40,25 @@ class GespotWorkflow(QObject):
             self.current_task.cancel()
 
     def start_analysis(self, gespot_dir: str, c6_dir: str,
-                       export_dir: str, etude_map=None) -> None:
+                       export_dir: str, etude_map=None,
+                       gespot_rows=None,
+                       gespot_source_label: str = '') -> None:
         """Lance la comparaison GESPOT vs C6 en tache de fond.
 
         Args:
-            etude_map: {normalized_inf_num: etude_name ou 'HORS ETUDE'} optionnel.
+            gespot_dir: Chemin du dossier GESPOT (ignore si gespot_rows fourni).
+            c6_dir:     Chemin du dossier C6 (= CAP FT).
+            export_dir: Dossier de sortie pour le rapport Excel.
+            etude_map:  {normalized_inf_num: etude_name ou 'HORS ETUDE'} optionnel.
                 Construit depuis infra_pt_pot + etude_cap_ft par l'orchestrateur.
+            gespot_rows: list[dict] de dicts bruts extraits de la couche QGIS
+                (main thread). Si fourni, gespot_dir est ignore et les regles
+                metier sont appliquees dans le worker thread avec la whitelist C6.
+            gespot_source_label: Label source pour les anomalies (ex: 'data_gespot').
         """
         self._cancelled = False
 
-        if not os.path.isdir(gespot_dir):
+        if gespot_rows is None and not os.path.isdir(gespot_dir):
             self.error_occurred.emit(f"Dossier GESPOT introuvable : {gespot_dir}")
             return
         if not os.path.isdir(c6_dir):
@@ -54,6 +71,9 @@ class GespotWorkflow(QObject):
             'export_dir': export_dir,
             'etude_map': etude_map or {},
         }
+        if gespot_rows is not None:
+            params['gespot_rows'] = gespot_rows
+            params['gespot_source_label'] = gespot_source_label
 
         self.current_task = GespotC6Task(params)
         self.current_task.signals.progress.connect(self.progress_changed)

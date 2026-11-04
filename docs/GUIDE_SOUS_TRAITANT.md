@@ -1,6 +1,6 @@
 # Guide sous-traitant - Plugin ST-AIR
 
-Version 3.2.0 - Public cible : sous-traitants FTTH aerien.
+Version 4.2.0 - Public cible : sous-traitants FTTH aerien.
 
 Ce guide est **autonome**. Il ne necessite aucune connaissance prealable du
 plugin, de QGIS avance ou du format des donnees. A la fin de la lecture,
@@ -16,7 +16,7 @@ une analyse complete et lire le rapport.
 3. [Installation du plugin](#3-installation-du-plugin)
 4. [Structure du dossier de projet](#4-structure-du-dossier-de-projet)
 5. [Premiere analyse : pas a pas](#5-premiere-analyse--pas-a-pas)
-6. [Les 5 modules d'analyse](#6-les-5-modules-danalyse)
+6. [Les modules d'analyse](#6-les-modules-danalyse)
 7. [Lire le rapport Excel](#7-lire-le-rapport-excel)
 8. [Anomalies les plus frequentes](#8-anomalies-les-plus-frequentes)
 9. [Modele de donnees attendu](#9-modele-de-donnees-attendu)
@@ -103,7 +103,7 @@ Vous n'avez **pas** besoin de savoir :
 
 ### 3.1 Installation depuis un fichier ZIP
 
-1. Recuperez le fichier `ST-AIR-v3.2.0.zip` fourni par votre donneur d'ordre.
+1. Recuperez le fichier `ST-AIR-v4.1.0.zip` fourni par votre donneur d'ordre.
 2. Ouvrez QGIS.
 3. Menu **Extensions** -> **Installer/Gerer les extensions**.
 4. Onglet **Installer depuis un ZIP**.
@@ -175,7 +175,8 @@ SRO manuellement dans l'interface.
 |   |-- PCM/                          <-- fichiers XML de calcul PCM
 |   |   |-- *.xml
 |
-|-- FT-BT KO B1L_00003.xlsx           <-- (optionnel) recap modifications
+|-- livrable_<SRO>.zip | .gpkg        <-- (optionnel) livrable GeoPackage
+|                                         (cables, BPE, attaches) - remplace la BDD
 |
 |-- rapport_63041_B1I_PMZ_00003_<date>.xlsx   <-- genere par le plugin
 ```
@@ -230,11 +231,16 @@ s'ouvre.
 
 Chaque module est une case a cocher :
 
-- MAJ BD
 - Verification CAP_FT
 - Verification COMAC
 - GESPOT vs C6
 - C6 vs BD
+- Police C6
+- C6-C3A-C7-BD
+
+> Le module **MAJ BD** (preparation des mises a jour shapefile a partir
+> d'un Excel `FT-BT KO`) n'est plus du perimetre sous-traitant : il est
+> traite en amont par le pole aerien.
 
 Le plugin desactive automatiquement les modules dont les fichiers requis
 manquent. Passez la souris sur un module grise pour voir pourquoi.
@@ -246,7 +252,22 @@ manquent. Passez la souris sur un module grise pour voir pourquoi.
 - **Charger les couches dans le projet QGIS** : si coche, les shapefiles
   restent dans le projet apres analyse ; sinon ils sont retires.
 
-### 5.6 Lancer
+### 5.6 Charger un livrable GeoPackage (optionnel)
+
+Si le pole aerien fournit un livrable `.zip` ou `.gpkg` contenant les
+cables, les BPE et les attaches, cliquez sur **Charger GPKG...** en
+bas de la fenetre avant de demarrer l'analyse.
+
+- Le plugin dezippe automatiquement, detecte le SRO, decoupe les cables
+  si necessaire (`cables_decoupes`) et charge les couches dans le projet.
+- Les modules **COMAC** et **Police C6** utiliseront ces donnees au lieu
+  de la BDD (qui n'est plus accessible cote sous-traitant).
+- Le log indique `[GPKG] Pret : SRO=... - N cables, M BPE, K attaches.`.
+
+En cas d'erreur, un message explicite apparait dans le log (fichier
+introuvable, livrable invalide, couche `cables` manquante).
+
+### 5.7 Lancer
 
 Cliquez sur le bouton vert **Demarrer l'analyse**.
 
@@ -268,29 +289,9 @@ Cliquez **Ouvrir le rapport** pour lancer Excel directement.
 
 ---
 
-## 6. Les 5 modules d'analyse
+## 6. Les modules d'analyse
 
-### 6.1 MAJ BD : preparation des mises a jour
-
-**But** : a partir d'un fichier Excel `FT-BT KO` fourni par le chef de projet,
-preparer la liste des poteaux a modifier dans le shapefile (etat, proprietaire,
-etiquettes).
-
-**Entree** :
-- `infra_pt_pot.shp`
-- Excel `FT-BT KO *.xlsx` : colonnes `gid`, `etat`, `inf_propri`,
-  `etiquette_jaune`, `etiquette_orange`, `zone_privee`, `transition_aerosout`,
-  etc.
-
-**Sortie** :
-- Feuille `MAJ_FT` et `MAJ_BT` dans le rapport.
-- Liste des poteaux KO avec les valeurs a ecrire.
-
-**Limite actuelle** : la version 3.2 **prepare** les modifications dans le
-rapport mais ne les ecrit pas directement dans le shapefile. Le chef de projet
-applique les MAJ manuellement (futur : edition directe, voir roadmap).
-
-### 6.2 Verification CAP_FT
+### 6.1 Verification CAP_FT
 
 **But** : verifier que chaque poteau FT declare dans les fiches d'appuis
 Orange (CAP_FT) existe bien dans le shapefile, avec les bonnes coordonnees
@@ -302,16 +303,15 @@ et la bonne zone d'etude.
 - Fichiers `CAP FT/**/FicheAppui_*.xlsx`.
 
 **Sortie** :
-- Feuille `CAPFT_DETAIL` : une ligne par appui avec statut OK/KO.
-- Feuille `CAPFT_RESUME` : nombre OK, absent dans QGIS, hors zone d'etude.
+- Feuille `CAPFT_ANALYSE` : une ligne par appui avec statut (`OK`, `ABSENT QGIS`, `ABSENT FICHES APPUIS`, `HORS PERIMETRE`).
 
 **Statuts possibles** :
 - `OK` : l'appui est dans le shapefile ET dans sa zone d'etude.
 - `ABSENT QGIS` : declare dans CAP_FT, inexistant dans le shapefile.
-- `HORS ETUDE` : present dans le shapefile mais en dehors des zones
-  d'etude CAP_FT.
+- `ABSENT FICHES APPUIS` : present dans la zone d'etude QGIS mais absent des fiches CAP_FT.
+- `HORS PERIMETRE` : present dans le shapefile du SRO mais en dehors des zones d'etude CAP_FT.
 
-### 6.3 Verification COMAC
+### 6.2 Verification COMAC
 
 **But** : croise les fichiers COMAC terrain avec le shapefile des poteaux
 et des cables pour verifier :
@@ -334,12 +334,13 @@ et des cables pour verifier :
 - (Optionnel) fichiers PCM XML dans `COMAC/PCM/`.
 
 **Sortie** :
-- `COMAC_DETAIL` : ligne par appui, cable et boitier.
+- `COMAC_ANALYSE` : ligne par appui, statut et explication detaillee.
+- `COMAC_SECURITE` : controles reglementaires et hauteurs NFC 11-201.
 - `COMAC_CABLES` : anomalies cables (ecart BDD vs COMAC).
-- `COMAC_PORTEES` : comparaison portees PCM vs distance geometrique.
-- `COMAC_DESSIN_XX` (optionnel) : schemas graphiques.
+- `COMAC_PORTEES` et `PCM_SUPPORTS` : comparaison portees/supports PCM vs geometrie.
+- `D_01` a `D_XX` (optionnel) : planches graphiques des schemas polaires.
 
-### 6.4 GESPOT vs C6
+### 6.3 GESPOT vs C6
 
 **But** : verifier 11 criteres croises entre les exports CSV GSPOT
 (terrain) et les Excel C6 (declaration Orange).
@@ -349,11 +350,10 @@ et des cables pour verifier :
 - Annexes C6 detectees dans `CAP FT/**/FTTH-NGE-ETUDE-*.xlsx`.
 
 **Sortie** :
-- Feuille `GESPOT_C6` avec une ligne par appui et 11 colonnes OK/KO
-  (hauteur, force, commune, X, Y, proprietaire, type appui, mode de
-  pose, etat, numero d'appui, code materiau).
+- Feuilles `GESPOT_ANALYSE`, `GESPOT_ABSENT_C6`, `GESPOT_ABSENT_GESPOT` et `GESPOT_ANOMALIES` avec le detail des 11 criteres croises
+  (adresse, centre, type appui, strategie, environnement, electricite, inaccessibilite, etc.).
 
-### 6.5 C6 vs BD
+### 6.4 C6 vs BD
 
 **But** : controler les annexes C6 Orange vs shapefile des poteaux.
 
@@ -402,9 +402,9 @@ Definit les termes metier utilises :
 Structure ISO/IEC 11179 : pour chaque champ du rapport, indique :
 - Nom, type, longueur, description, exemple, obligatoire ou non.
 
-### 7.5 Feuilles COMAC_DESSIN_XX (optionnel)
+### 7.5 Feuilles D_01 a D_XX (optionnel)
 
-2 appuis par page, avec :
+Planches graphiques COMAC, avec :
 - Schema polaire de l'appui (azimuts cables, type armement).
 - Tableau des cables passant par l'appui.
 
@@ -696,7 +696,7 @@ SharePoint comme n'importe quel fichier.
 
 ### 12.7 Puis-je personnaliser les criteres du rapport ?
 
-Non en version 3.2. Les seuils metier (tolerances, listes de valeurs) sont
+Non en version 4.1.0. Les seuils metier (tolerances, listes de valeurs) sont
 figes dans le code. Demandez au donneur d'ordre si vous pensez qu'un
 seuil est mal calibre.
 

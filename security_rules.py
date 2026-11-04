@@ -1,4 +1,14 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
+import re
+
 """
 Module de règles de sécurité pour câbles aériens.
 Basé sur norme NFC 11201-A1 et spécifications Prysmian.
@@ -7,20 +17,7 @@ Sources données:
 - BDD comac_db/ (CSV officiels): cables.csv, comm_XX.csv, hypothese.csv
 - BDD PostgreSQL (rip_avg_nge): t_cheminement.cm_long, cables.cab_capa
 - Excel Comac: Longueur à facturer (AU), Type de ligne (L1092-xx-P), Conducteur (CU/BT)
-- GraceTHD: t_cable.cb_capafo, t_cheminement.cm_long
 """
-
-# Import optionnel du reader BD officielle
-try:
-    from .comac_db_reader import (
-        get_cable_capacite as _db_get_capacite,
-        get_cable_capacites_possibles as _db_get_capas_possibles,
-        get_zone_vent_from_hypotheses as _db_get_zone_hypo,
-        get_zone_vent_from_insee as _db_get_zone_insee
-    )
-    _HAS_COMAC_DB = True
-except ImportError:
-    _HAS_COMAC_DB = False
 
 # =============================================================================
 # CONSTANTES - Portées maximales (mètres) selon capacité FO et zone climatique
@@ -136,16 +133,6 @@ BDD_COL_ADR_INSEE = 'adr_insee'       # Code INSEE commune
 BDD_COL_COMMENTAIRE = 'commentaire'   # Commentaire (contient "PRIVE" si terrain privé)
 
 # =============================================================================
-# CONSTANTES - Colonnes GraceTHD
-# =============================================================================
-
-GRACETHD_COL_CB_CAPAFO = 'cb_capafo'  # Capacité FO
-GRACETHD_COL_CB_ND1 = 'cb_nd1'        # Noeud origine
-GRACETHD_COL_CB_ND2 = 'cb_nd2'        # Noeud destination
-GRACETHD_COL_CM_LONG = 'cm_long'      # Longueur cheminement
-
-
-# =============================================================================
 # FONCTIONS DE VALIDATION
 # =============================================================================
 
@@ -165,14 +152,8 @@ def get_capacites_possibles(code_cable: str) -> list:
     """
     if not code_cable:
         return [0]
-    
-    # Priorité 1: PostgreSQL (comac.cable_capacites_possibles)
-    if _HAS_COMAC_DB:
-        capas = _db_get_capas_possibles(code_cable)
-        if capas and capas != [0]:
-            return capas
-    
-    # Priorité 2: mapping local hardcodé
+
+    # Mapping local hardcode (source unique depuis suppression BDD)
     code_clean = str(code_cable).strip().upper()
     for code, capas in CAPACITES_POSSIBLES.items():
         if code.upper() in code_clean:
@@ -185,33 +166,23 @@ def get_capacites_possibles(code_cable: str) -> list:
 
 def get_capacite_fo_from_code(code_cable: str, debug: bool = False) -> int:
     """
-    Extrait la capacité FO depuis un code câble Prysmian.
-    Utilise la BD officielle comac_db si disponible, sinon fallback local.
-    
+    Extrait la capacité FO depuis un code câble Prysmian (mapping local).
+
     Args:
         code_cable: Code type "L1092-13-P" ou "L1092-13-P-"
         debug: Active les logs de debug
-    
+
     Returns:
         Capacité FO (6, 12, 36, 72, 144) ou 0 si non reconnu
     """
     if debug:
         print(f"[COMAC_CAPA] Input code_cable: '{code_cable}' (type={type(code_cable).__name__})")
-    
+
     if not code_cable:
         if debug:
             print("[COMAC_CAPA] -> code_cable vide/None, return 0")
         return 0
-    
-    # Priorité: BD officielle comac_db
-    if _HAS_COMAC_DB:
-        capa = _db_get_capacite(code_cable)
-        if capa > 0:
-            if debug:
-                print(f"[COMAC_CAPA] -> BD officielle: {code_cable} => {capa} FO")
-            return capa
-    
-    # Fallback: mapping local
+
     code_clean = str(code_cable).strip().upper()
     if debug:
         print(f"[COMAC_CAPA] Code nettoyé: '{code_clean}'")
@@ -221,7 +192,16 @@ def get_capacite_fo_from_code(code_cable: str, debug: bool = False) -> int:
             if debug:
                 print(f"[COMAC_CAPA] -> MATCH local: '{code}' in '{code_clean}' => capacité={capa}")
             return capa
-    
+
+    # Codes Prysmian gamme H (A-H0342A-24F-60-P, A-H0388A-6FO-0-P, etc.)
+    # Capacité = nombre de fibres extrait du segment <n>F ou <n>FO
+    m = re.search(r'(\d+)(?:F|FO)', code_clean)
+    if m:
+        capa = int(m.group(1))
+        if debug:
+            print(f"[COMAC_CAPA] -> MATCH gamme H: '{code_clean}' => capacité={capa}")
+        return capa
+
     if debug:
         print(f"[COMAC_CAPA] -> AUCUN MATCH pour '{code_clean}'")
     return 0

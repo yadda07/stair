@@ -1,17 +1,71 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 Fonctions utilitaires dépendantes de QGIS pour le plugin PoleAerien.
 ATTENTION: Ne pas importer dans les workers threads sans précaution.
 """
 
+from typing import Optional
+
 from qgis.core import (
     QgsProject, QgsLayerTreeLayer, QgsMessageLog, Qgis, 
     QgsSpatialIndex, QgsFeatureRequest, NULL
 )
-from .compat import MSG_INFO, MSG_WARNING
+from .compat import MSG_INFO, MSG_WARNING, FR_NO_GEOMETRY
 import re
 from .core_utils import normalize_appui_num
+
+
+# -----------------------------------------------------------------------------
+# Extraction SRO depuis une couche (migre depuis db_connection.py apres
+# suppression du module BDD). Cette fonction est agnostique de la source :
+# elle cherche le SRO dans les attributs de la couche, peu importe si la
+# couche vient d'un GeoPackage, d'un Shapefile ou d'une BDD.
+# -----------------------------------------------------------------------------
+
+_SRO_FIELD_CANDIDATES = ['sro', 'SRO', 'code_sro', 'CODE_SRO', 'pt_ad_sro', 'PT_AD_SRO']
+
+
+def extract_sro_from_layer(layer) -> Optional[str]:
+    """Extrait le code SRO depuis les attributs d'une couche QGIS.
+
+    Parcourt une liste de noms de champs candidats et retourne la premiere
+    valeur non vide rencontree. Ne depend d'aucune BDD.
+
+    Args:
+        layer: QgsVectorLayer
+
+    Returns:
+        Code SRO ou None.
+    """
+    if not layer or not layer.isValid():
+        return None
+
+    fields = layer.fields()
+    for sro_field in _SRO_FIELD_CANDIDATES:
+        idx_sro = fields.indexFromName(sro_field)
+        if idx_sro < 0:
+            continue
+        req = (
+            QgsFeatureRequest()
+            .setFilterExpression(f'"{sro_field}" IS NOT NULL AND "{sro_field}" != \'\'')
+            .setSubsetOfAttributes([idx_sro])
+            .setLimit(1)
+            .setFlags(FR_NO_GEOMETRY)
+        )
+        for feature in layer.getFeatures(req):
+            value = feature[idx_sro]
+            if value and str(value).strip():
+                return str(value).strip()
+    return None
 
 
 # Patterns pour auto-detection du champ etude dans une couche
@@ -275,40 +329,45 @@ def extraire_poteaux_etude(
         ValueError: Couche introuvable ou CRS incoherent
     """
     from .security_rules import est_terrain_prive
-    
+
     infra_pt_pot = get_layer_safe(table_poteau, context)
     etude = get_layer_safe(table_etude, context)
     validate_same_crs(infra_pt_pot, etude, context)
-    
+
     total_couche = infra_pt_pot.featureCount()
-    req_pot = QgsFeatureRequest()
-    # Egalite stricte (pas de wildcards attendus dans pot_type_filter).
-    # LIKE sans wildcard est equivalent a '=' mais moins clair.
-    req_pot.setFilterExpression(f"inf_type = '{pot_type_filter}'")
-    req_pot.setOrderBy(QgsFeatureRequest.OrderBy(
-        [QgsFeatureRequest.OrderByClause('inf_type', ascending=True)]))
-    req_etude = QgsFeatureRequest()
-    req_etude.setOrderBy(QgsFeatureRequest.OrderBy(
-        [QgsFeatureRequest.OrderByClause(colonne_etude, ascending=True)]))
-    
-    # Index spatial poteaux (une seule construction)
-    idx_pot, poteaux_dict = build_spatial_index(infra_pt_pot, req_pot)
-    
-    QgsMessageLog.logMessage(
-        f"[{context}] {len(poteaux_dict)}/{total_couche} poteaux {pot_type_filter} dans {len(list(etude.getFeatures()))} zones etude",
-        "PoleAerien", MSG_INFO
-    )
-    
-    # Index champ commentaire pour detection terrain prive.
-    # Essaye plusieurs noms : 'commentaire' (PostgreSQL) puis 'commentair'
-    # (tronque DBF a 10 chars sur shapefile).
+    idx_inf_num = infra_pt_pot.fields().indexFromName('inf_num')
     idx_commentaire = _index_from_names(
         infra_pt_pot, ('commentaire', 'commentair'), context
     )
-    
+    pot_attrs = [i for i in (idx_inf_num, idx_commentaire) if i >= 0]
+
+    req_pot = QgsFeatureRequest()
+    if '%' in pot_type_filter:
+        req_pot.setFilterExpression(f"inf_type LIKE '{pot_type_filter}'")
+    else:
+        req_pot.setFilterExpression(f"inf_type = '{pot_type_filter}'")
+    if pot_attrs:
+        req_pot.setSubsetOfAttributes(pot_attrs)
+
+    idx_etude = etude.fields().indexFromName(colonne_etude)
+    req_etude = QgsFeatureRequest()
+    if idx_etude >= 0:
+        req_etude.setSubsetOfAttributes([idx_etude])
+    req_etude.setOrderBy(QgsFeatureRequest.OrderBy(
+        [QgsFeatureRequest.OrderByClause(colonne_etude, ascending=True)]))
+
+    # Index spatial poteaux (une seule construction)
+    idx_pot, poteaux_dict = build_spatial_index(infra_pt_pot, req_pot)
+
+    QgsMessageLog.logMessage(
+        f"[{context}] {len(poteaux_dict)}/{total_couche} poteaux {pot_type_filter} "
+        f"dans {etude.featureCount()} zones etude",
+        "PoleAerien", MSG_INFO
+    )
+
     # Collecter tous les fid trouves dans au moins une etude
     fids_dans_etude = set()
-    
+
     dico_etude = {}
     dico_prives = {}
     # Detection des doublons en une seule passe (ECART-07).
@@ -316,7 +375,7 @@ def extraire_poteaux_etude(
     _noms_vus = set()
 
     for feat_etude in etude.getFeatures(req_etude):
-        nom_etude = feat_etude[colonne_etude]
+        nom_etude = feat_etude[idx_etude] if idx_etude >= 0 else feat_etude[colonne_etude]
 
         # Doublon de nom d'etude (independant de la geometrie).
         if nom_etude in _noms_vus:
@@ -336,7 +395,7 @@ def extraire_poteaux_etude(
         for fid in idx_pot.intersects(bbox):
             feat_pot = poteaux_dict[fid]
             if geom_etude.contains(feat_pot.geometry()):
-                raw_inf = feat_pot["inf_num"]
+                raw_inf = feat_pot[idx_inf_num] if idx_inf_num >= 0 else feat_pot["inf_num"]
                 if raw_inf and raw_inf != NULL:
                     liste_pot.append(raw_inf)
                     fids_dans_etude.add(fid)
@@ -348,30 +407,24 @@ def extraire_poteaux_etude(
         if liste_priv:
             dico_prives.setdefault(nom_etude, []).extend(liste_priv)
 
-    # Poteaux hors etude = poteaux valides non trouves dans aucune etude
+    # Passe unique: poteaux hors etude + index inf_num + coordonnees
     hors_etude = []
-    for fid, feat_pot in poteaux_dict.items():
-        if fid not in fids_dans_etude:
-            raw_inf = feat_pot["inf_num"]
-            if raw_inf and raw_inf != NULL:
-                hors_etude.append(raw_inf)
-    
-    # Index complet: tous les inf_num normalises de la couche (in + hors etude)
-    # Permet de distinguer "absent QGIS" vs "hors perimetre etude"
     all_inf_nums = set()
-    # Coordonnees poteaux: {inf_num: (x, y)} - thread-safe (plain floats)
     coords_qgis = {}
     for fid, feat_pot in poteaux_dict.items():
-        raw_inf = feat_pot["inf_num"]
-        if raw_inf and raw_inf != NULL:
-            cle = normalize_appui_num(raw_inf, strip_e_prefix=True,
-                                     keep_commune=keep_commune)
-            if cle:
-                all_inf_nums.add(cle)
-            if feat_pot.hasGeometry():
-                pt = feat_pot.geometry().asPoint()
-                coords_qgis[raw_inf] = (pt.x(), pt.y())
-    
+        raw_inf = feat_pot[idx_inf_num] if idx_inf_num >= 0 else feat_pot["inf_num"]
+        if not raw_inf or raw_inf == NULL:
+            continue
+        if fid not in fids_dans_etude:
+            hors_etude.append(raw_inf)
+        cle = normalize_appui_num(raw_inf, strip_e_prefix=True,
+                                  keep_commune=keep_commune)
+        if cle:
+            all_inf_nums.add(cle)
+        if feat_pot.hasGeometry():
+            pt = feat_pot.geometry().asPoint()
+            coords_qgis[raw_inf] = (pt.x(), pt.y())
+
     total_pot_in = sum(len(v) for v in dico_etude.values())
     QgsMessageLog.logMessage(
         f"[{context}] RESULTAT: {len(dico_etude)} etudes avec poteaux, "
@@ -381,6 +434,6 @@ def extraire_poteaux_etude(
         f"{len(dico_prives)} etudes avec terrains prives, {len(doublons)} doublons",
         "PoleAerien", MSG_INFO
     )
-    
+
     return doublons, hors_etude, dico_etude, dico_prives, all_inf_nums, coords_qgis
 

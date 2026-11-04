@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 Performance logger - persiste les durees d'execution par phase/module en CSV.
 
@@ -9,8 +17,8 @@ Usage:
     from .perf_logger import PerfLogger
     PerfLogger.record('comac', 'extraction_qgis', duration_ms=1240, feature_count=850)
 
-    with PerfLogger.timer('police_c6', 'fddcpi2_query', sro=sro):
-        cables = db.execute_fddcpi2(sro)
+    with PerfLogger.timer('police_c6', 'cables_gpkg_load', sro=sro):
+        cables = load_cables_from_gpkg(sro)
 """
 
 import csv

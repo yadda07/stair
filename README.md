@@ -35,11 +35,12 @@ Il explique pas a pas :
 
 | Module              | But                                                 |
 |---------------------|-----------------------------------------------------|
-| MAJ BD              | Preparer les MAJ sur le shapefile des poteaux       |
 | Verification CAP_FT | Poteaux FT (shapefile) vs fiches d'appuis Orange    |
 | Verification COMAC  | Poteaux BT, cables, boitiers, portees PCM vs terrain|
 | GESPOT vs C6        | CSV GSPOT vs Excel C6, 11 criteres                  |
 | C6 vs BD            | Annexes C6 Orange vs shapefile                      |
+| Police C6           | Analyse police / charge des cables                  |
+| C6-C3A-C7-BD        | Recoupement annexes C6 / C3A / C7                   |
 
 ## Installation rapide
 
@@ -76,9 +77,11 @@ dossier_SRO/
 |-- BASE DE DONNEES/GSPOT/*.csv    (exports terrain GSPOT)
 |-- CAP FT/                        (FicheAppui_*.xlsx + annexes C6)
 |-- COMAC/                         (*ExportComac*.xlsx + PCM XML)
-|-- FT-BT KO *.xlsx                (optionnel, recap MAJ)
+|-- livrable_<SRO>.zip | .gpkg     (optionnel : charger via bouton "Charger GPKG...")
 |-- rapport_<SRO>_<date>.xlsx      (genere par le plugin)
 ```
+
+Le module MAJ BD a ete retire du scope sous-traitant : la preparation des modifications sur la BDD est effectuee en amont par le pole aerien.
 
 ## Developpeurs
 
@@ -100,6 +103,8 @@ Lancer les tests :
 Voir `metadata.txt` section `changelog` pour l'historique complet.
 Highlights recents :
 
+- **4.0.1 (2026-07-09)** : Corrections GESPOT : NULL/Non équivalents, fallback stratégie sur carac1-5, contrôles adresse/centre désactivés.
+- **4.0.0 (2026-07)** : Export GPKG, mode BDD/GPKG, interface V2 avec icônes, sécurité QgsAuthManager.
 - **3.2.0 (2026-04)** : Renommage ST-AIR, guide sous-traitant complet,
   corrections qgis_utils (46 tests).
 - **3.1.0 (2026-03)** : Compatibilite QGIS 4.0 (Qt6/PyQt6).

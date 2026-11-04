@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 /***************************************************************************
  Pôle Aérien
@@ -22,6 +30,38 @@
  This script initializes the plugin, making it known to QGIS.
 """
 
+# -----------------------------------------------------------------------------
+# FIX Windows fatal exception (access violation) dans openpyxl.reader.excel
+# (reader/excel.py:135 -> fromstring(src) dans read_manifest).
+#
+# lxml/libxml2 n'est pas thread-safe sur Windows quand il est appele depuis un
+# thread worker QgsTask pendant que GDAL/QGIS utilisent deja libxml2 sur le
+# thread principal. Stack observee : xmlDictReference +
+# RtlpEnterCriticalSectionContended sous PyQgsTask::start.
+#
+# openpyxl bascule sur xml.etree.ElementTree (pur Python, thread-safe) si la
+# variable d'environnement OPENPYXL_LXML n'est pas "True" (cf.
+# openpyxl/xml/__init__.py). Elle est lue a l'import du module, il faut donc
+# la definir AVANT tout `import openpyxl` dans le process QGIS.
+# -----------------------------------------------------------------------------
+import warnings
+
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="openpyxl")
+
+from .lib_compat import ensure_openpyxl_safe_backend as _ensure_ox
+_ensure_ox()
+
+# -----------------------------------------------------------------------------
+# FIX pyarrow.compute.match_substring_regex manquant sur QGIS 3.34.x
+#
+# Certaines versions embarquent un pyarrow < 7.0 sans cette fonction.
+# Pandas >= 2.0 l'appelle via ArrowStringArray meme pour str.contains(regex=False).
+# On force le backend string « python » pour eviter le crash.
+# Doit etre execute avant tout import pandas applicatif.
+# -----------------------------------------------------------------------------
+from .lib_compat import patch_pandas_arrow_backend as _patch_pa
+_patch_pa()
+
 
 class Initialisation:
     """Classe de métadonnées du plugin"""
@@ -33,7 +73,8 @@ class Initialisation:
         return "Pôle Aérien"
 
     def version(self):
-        return "2.3.0"
+        from .version import get_version
+        return get_version()
 
     def description(self):
         return "Contrôle qualité et mise à jour des poteaux aériens ENEDIS (FT/BT) pour projets FTTH"
@@ -42,7 +83,7 @@ class Initialisation:
         return "3.28"
 
     def qgisMaximumVersion(self):
-        return "3.99"
+        return "4.99"
 
     def experimental(self):
         return False

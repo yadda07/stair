@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 Parseur de fichiers COMAC (.pcm) pour extraction des données de sécurité.
 Les fichiers .pcm sont au format XML ISO-8859-1.
@@ -438,7 +446,7 @@ def _parse_portees_globales(root: ET.Element, etude: EtudePCM):
 
 
 # =============================================================================
-# EXTRACTION PORTEES PAR CABLE (pour comparaison avec BDD/GraceTHD)
+# EXTRACTION PORTEES PAR CABLE (pour comparaison avec BDD)
 # =============================================================================
 
 def extraire_portees_par_cable(

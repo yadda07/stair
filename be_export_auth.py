@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """Internal helper around the QGIS stored PostgreSQL connection.
 
 Provides a short-lived background probe and helpers used by the
@@ -21,14 +29,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 #  Configuration
 # ---------------------------------------------------------------------------
-QGIS_CONN_NAME = os.environ.get("STAIR_QGIS_CONN_NAME", "")
+QGIS_CONN_NAME = os.environ.get("STAIR_QGIS_CONN_NAME", "AUVERGNE")
 
 _ALLOWED_HOSTS = frozenset(
     h.strip() for h in os.environ.get("STAIR_ALLOWED_HOSTS", "").split(",") if h.strip()
 )
 
-_DB_SCHEMA = os.environ.get("STAIR_AUTH_SCHEMA", "")
-_DB_TABLE = os.environ.get("STAIR_AUTH_TABLE", "")
+_DB_SCHEMA = os.environ.get("STAIR_AUTH_SCHEMA", "public")
+_DB_TABLE = os.environ.get("STAIR_AUTH_TABLE", "stair_export_auth")
 
 _CONNECT_TIMEOUT_S = 3
 
@@ -40,7 +48,7 @@ _STATUS_AUTHORIZED = 3
 def read_qgis_pg_params(conn_name: str = "") -> Optional[Dict[str, str]]:
     """Return PG params dict (host, port, dbname, user, password) or None."""
     if not conn_name:
-        conn_name = os.environ.get("STAIR_QGIS_CONN_NAME", "")
+        conn_name = os.environ.get("STAIR_QGIS_CONN_NAME") or QGIS_CONN_NAME
     if not conn_name:
         logger.warning("qgis_conn_name_not_configured")
         return None
@@ -59,6 +67,8 @@ def read_qgis_pg_params(conn_name: str = "") -> Optional[Dict[str, str]]:
             'password': s.value(prefix + "password", ""),
         }
         authcfg = s.value(prefix + "authcfg", "")
+        if not authcfg:
+            authcfg = _AUTHCFG_NAME
         if authcfg and not params['password']:
             try:
                 from qgis.core import QgsApplication, QgsAuthMethodConfig
@@ -226,7 +236,7 @@ def test_pg_connection(
         return False, "%s: %s" % (type(exc).__name__, exc)
 
 
-_AUTHCFG_NAME = os.environ.get("STAIR_AUTHCFG_NAME", "")
+_AUTHCFG_NAME = os.environ.get("STAIR_AUTHCFG_NAME", "stair_export_auvergne")
 
 
 def save_qgis_pg_credentials(
@@ -235,12 +245,12 @@ def save_qgis_pg_credentials(
 ) -> bool:
     """Persist credentials in QgsAuthManager and link them to ``conn_name``."""
     if not conn_name:
-        conn_name = os.environ.get("STAIR_QGIS_CONN_NAME", "")
+        conn_name = os.environ.get("STAIR_QGIS_CONN_NAME") or QGIS_CONN_NAME
     if not conn_name:
         logger.error("save_creds_conn_name_empty")
         return False
 
-    authcfg_name = os.environ.get("STAIR_AUTHCFG_NAME", "")
+    authcfg_name = os.environ.get("STAIR_AUTHCFG_NAME") or _AUTHCFG_NAME
     if not authcfg_name:
         logger.error("authcfg_name_not_configured")
         return False

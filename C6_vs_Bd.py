@@ -1,5 +1,13 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 C6_vs_Bd.py - Comparaison des données C6 par rapport à la base de données.
 
@@ -17,7 +25,7 @@ import os
 import warnings
 import numpy as np
 import pandas as pd
-from openpyxl.styles import PatternFill
+from .lib_compat import list_xlsx_sheet_names_stdlib, read_xlsx_sheet_stdlib
 
 from .core_utils import normalize_appui_num, is_plugin_output_file
 from .qgis_utils import detect_etude_field as _detect_etude_field
@@ -56,26 +64,35 @@ class C6_vs_Bd:
                 cheminComplet = os.path.join(subdir, name)
 
                 try:
-                    with pd.ExcelFile(cheminComplet) as xls:
-                        sheet_names = xls.sheet_names
-                        target_sheet = None
-                        header_row = 7  # Par défaut ligne 8 (0-indexed = 7)
-                        
-                        # Essayer plusieurs noms de feuilles courants pour C6
-                        for candidate in ["Export 1", "Export1", "Saisies terrain"]:
-                            if candidate in sheet_names:
-                                target_sheet = candidate
-                                break
-                        
-                        if target_sheet is None:
-                            continue  # Fichier vide, ignorer silencieusement
-                        
-                        # Vérifier que le fichier a assez de lignes
-                        df_check = pd.read_excel(xls, target_sheet, header=None, nrows=header_row + 2)
-                        if len(df_check) < header_row + 1:
-                            continue  # Fichier trop court, pas un C6
-                        
-                        df1 = pd.read_excel(xls, target_sheet, header=header_row, index_col=None)
+                    # zip + xml.etree uniquement (pas openpyxl/lxml) - safe QgsTask Windows
+                    sheet_names = list_xlsx_sheet_names_stdlib(cheminComplet)
+                    target_sheet = None
+                    header_row = 7
+
+                    for candidate in ["Export 1", "Export1", "Saisies terrain"]:
+                        if candidate in sheet_names:
+                            target_sheet = candidate
+                            break
+
+                    if target_sheet is None:
+                        continue
+
+                    all_rows = read_xlsx_sheet_stdlib(cheminComplet, target_sheet)
+                    header = None
+                    data = []
+                    row_idx = 0
+                    for row in all_rows:
+                        if row_idx == header_row:
+                            header = row
+                        elif row_idx > header_row:
+                            data.append(row)
+                        row_idx += 1
+
+                    # Vérifier que le fichier a assez de lignes
+                    if header is None or row_idx < header_row + 2:
+                        continue  # Fichier trop court, pas un C6
+
+                    df1 = pd.DataFrame(data, columns=header)
                     
                     if df1.empty:
                         continue
@@ -148,13 +165,21 @@ class C6_vs_Bd:
             raise ValueError(f"[C6_vs_Bd] Couche '{table_etude_cap_ft}' introuvable dans le projet QGIS")
         etude_cap_ft = _lyrs_cap[0]
 
-        # Index spatial des polygones CAP FT (une seule construction)
-        cap_ft_index = QgsSpatialIndex(etude_cap_ft.getFeatures())
+        # Index spatial des polygones CAP FT en une seule passe
+        idx_col_cap = etude_cap_ft.fields().indexFromName(colonne_cap_ft)
+        req_cap = QgsFeatureRequest()
+        if idx_col_cap >= 0:
+            req_cap.setSubsetOfAttributes([idx_col_cap])
+
+        cap_ft_index = QgsSpatialIndex()
         cap_ft_cache = {}
-        for feat in etude_cap_ft.getFeatures():
+        for feat in etude_cap_ft.getFeatures(req_cap):
+            if not feat.hasGeometry():
+                continue
+            cap_ft_index.addFeature(feat)
             cap_ft_cache[feat.id()] = {
                 'geom': feat.geometry(),
-                'etude': feat[colonne_cap_ft]
+                'etude': feat[idx_col_cap] if idx_col_cap >= 0 else feat[colonne_cap_ft],
             }
 
         listePoteaux = []
@@ -164,24 +189,31 @@ class C6_vs_Bd:
         nature_travaux = []
         poteaux_out = []
 
-        requete = QgsExpression("inf_type LIKE 'POT-FT'")
-        request = QgsFeatureRequest(requete)
+        idx_inf_num = infra_pt_pot.fields().indexFromName('inf_num')
+        idx_etat = infra_pt_pot.fields().indexFromName('etat')
+        pot_attrs = [i for i in (idx_inf_num, idx_etat) if i >= 0]
+
+        request = QgsFeatureRequest().setFilterExpression("inf_type = 'POT-FT'")
+        if pot_attrs:
+            request.setSubsetOfAttributes(pot_attrs)
 
         for feat_pot in infra_pt_pot.getFeatures(request):
             pt_geom = feat_pot.geometry()
             if not pt_geom or pt_geom.isEmpty():
                 continue
 
+            raw_inf = feat_pot[idx_inf_num] if idx_inf_num >= 0 else feat_pot["inf_num"]
+            raw_etat = feat_pot[idx_etat] if idx_etat >= 0 else feat_pot["etat"]
             candidate_ids = cap_ft_index.intersects(pt_geom.boundingBox())
             is_covered = False
 
             for cid in candidate_ids:
                 cap_data = cap_ft_cache.get(cid)
                 if cap_data and cap_data['geom'].contains(pt_geom):
-                    inf_num = feat_pot["inf_num"]
+                    inf_num = raw_inf
                     etudes = cap_data['etude']
 
-                    etat = "" if feat_pot["etat"] == NULL else feat_pot["etat"]
+                    etat = "" if raw_etat == NULL else raw_etat
                     nature = "Recalage" if etat == "A RECALER" else ("Remplacement" if etat == "A REMPLACER" else etat)
 
                     num_appui = normalize_appui_num(inf_num)
@@ -195,8 +227,8 @@ class C6_vs_Bd:
                     break
 
             if not is_covered:
-                inf_num = feat_pot["inf_num"]
-                etat = "" if feat_pot["etat"] == NULL else str(feat_pot["etat"])
+                inf_num = raw_inf
+                etat = "" if raw_etat == NULL else str(raw_etat)
                 num_appui = normalize_appui_num(inf_num)
                 if num_appui:
                     poteaux_out.append({
@@ -292,7 +324,12 @@ class C6_vs_Bd:
             int: Nombre d'erreurs (lignes avec ABSENT)
         """
         nb_erreurs = 0
-        
+
+        from .lib_compat import ensure_openpyxl_safe_backend
+
+        ensure_openpyxl_safe_backend()
+        from openpyxl.styles import PatternFill
+
         with pd.ExcelWriter(fichier, engine="openpyxl") as writer:
             # Feuille 1: Analyse principale C6 BD
             sheet_name = "ANALYSE C6 BD"

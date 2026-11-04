@@ -1,3 +1,11 @@
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 Couche de compatibilite QGIS 3.x (Qt5) / QGIS 4.x (Qt6).
 
@@ -39,6 +47,18 @@ CURSOR_ARROW = Qt.CursorShape.ArrowCursor
 # Window flags
 WF_NO_HELP = Qt.WindowType.WindowContextHelpButtonHint
 
+# DockWidget areas
+try:
+    DOCK_LEFT = Qt.DockWidgetArea.LeftDockWidgetArea
+    DOCK_RIGHT = Qt.DockWidgetArea.RightDockWidgetArea
+    DOCK_TOP = Qt.DockWidgetArea.TopDockWidgetArea
+    DOCK_BOTTOM = Qt.DockWidgetArea.BottomDockWidgetArea
+except AttributeError:
+    DOCK_LEFT = Qt.LeftDockWidgetArea
+    DOCK_RIGHT = Qt.RightDockWidgetArea
+    DOCK_TOP = Qt.TopDockWidgetArea
+    DOCK_BOTTOM = Qt.BottomDockWidgetArea
+
 # Case sensitivity
 CASE_INSENSITIVE = Qt.CaseSensitivity.CaseInsensitive
 CASE_SENSITIVE = Qt.CaseSensitivity.CaseSensitive
@@ -64,13 +84,21 @@ PAL_HIGHLIGHT = QPalette.ColorRole.Highlight
 # ---------------------------------------------------------------------------
 # QFrame shapes / shadows
 # ---------------------------------------------------------------------------
-from qgis.PyQt.QtWidgets import QFrame, QDialogButtonBox
+from qgis.PyQt.QtWidgets import QFrame, QDialogButtonBox, QDialog
 
 FRAME_HLINE = QFrame.Shape.HLine
 FRAME_SUNKEN = QFrame.Shadow.Sunken
 
 BTN_OK = QDialogButtonBox.StandardButton.Ok
 BTN_CANCEL = QDialogButtonBox.StandardButton.Cancel
+
+# QDialog.DialogCode (forme longue PyQt6 / forme courte PyQt5)
+try:
+    DIALOG_ACCEPTED = QDialog.DialogCode.Accepted
+    DIALOG_REJECTED = QDialog.DialogCode.Rejected
+except AttributeError:
+    DIALOG_ACCEPTED = QDialog.Accepted
+    DIALOG_REJECTED = QDialog.Rejected
 
 # ---------------------------------------------------------------------------
 # Qgis.MessageLevel (forme longue QGIS >= 3.36, fallback forme courte)

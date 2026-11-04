@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 Unified Excel Report - Professional diagnostic workbook.
 
@@ -12,8 +20,11 @@ Style: Calibri 10pt, dark blue headers (#1F4E79), thin grey borders,
 
 import json
 import os
+import warnings
 from io import BytesIO
 from datetime import datetime
+
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="openpyxl")
 
 import openpyxl
 from .core_utils import normalize_appui_num as _normalize
@@ -21,6 +32,8 @@ from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import pandas as pd
+from .lib_compat import safe_str_contains as _str_has
+from .version import get_version
 
 
 # ======================================================================
@@ -28,12 +41,12 @@ import pandas as pd
 # ======================================================================
 
 _TAB = {
-    'maj': 'F59E0B', 'capft': '34D399', 'gespot_c6': '0EA5E9',
+    'capft': '34D399', 'gespot_c6': '0EA5E9',
     'comac': 'EA580C', 'c6bd': 'EC4899', 'police_c6': 'A855F7', 'c6c3a': '3B82F6',
 }
 _NAMES = {
-    'maj': '0. MAJ BD', 'capft': '1. VERIF CAP_FT', 'gespot_c6': '2. GESPOT vs C6',
-    'comac': '3. VERIF COMAC', 'c6bd': '4. C6 vs BD',
+    'capft': '1. VERIF CAP_FT', 'gespot_c6': '2. GESPOT vs C6',
+    'comac': '3. VERIF COMAC', 'c6bd': '4. C6 vs Donnees Projet',
     'police_c6': '5. POLICE C6', 'c6c3a': '6. C6-C3A-BD',
 }
 
@@ -179,7 +192,7 @@ def _write_comac_drawing_sheets(wb, result, report_options):
     for page_idx, page in enumerate(pages):
         if _report_cancelled(report_options):
             return False
-        sheet_name = f"DESSIN_{page_idx + 1:02d}"
+        sheet_name = f"D_{page_idx + 1:02d}"
         ws = wb.create_sheet(sheet_name)
         _init_drawing_page(ws, page_idx + 1, total_pages, len(all_entries_flat), error_count)
         for placement in page:
@@ -315,13 +328,6 @@ def _place_study_block(ws, placement, diagram_map):
 #  KPI EXTRACTION (for dashboard)
 # ======================================================================
 
-def _kpi_maj(r):
-    ft = r.get('liste_ft', [0, None, 0])
-    bt = r.get('liste_bt', [0, None, 0])
-    ok = (ft[2] if len(ft) > 2 else 0) + (bt[2] if len(bt) > 2 else 0)
-    nok = (ft[0] if ft else 0) + (bt[0] if bt else 0)
-    return ok, nok, f"FT:{ft[2] if len(ft)>2 else 0} id/{ft[0] if ft else 0} introuv | BT:{bt[2] if len(bt)>2 else 0} id/{bt[0] if bt else 0} introuv"
-
 def _kpi_capft(r):
     res = r.get('resultats')
     if not res: return 0, 0, ''
@@ -369,7 +375,7 @@ def _kpi_comac(r):
 def _kpi_c6bd(r):
     df = r.get('final_df')
     if df is None or df.empty: return 0, 0, ''
-    nok = int(df['Statut'].astype(str).str.contains('ABSENT').sum()) if 'Statut' in df.columns else 0
+    nok = _str_has(df['Statut'], 'ABSENT') if 'Statut' in df.columns else 0
     ok = len(df) - nok
     return ok, nok, f"{ok} trouves | {nok} absents | {len(r.get('df_poteaux_out', pd.DataFrame()))} hors perimetre"
 
@@ -397,7 +403,7 @@ def _kpi_gespot_c6(r):
         f"{nb_anomalies} anomalies"
     )
 
-_KPI = {'maj': _kpi_maj, 'capft': _kpi_capft, 'gespot_c6': _kpi_gespot_c6,
+_KPI = {'capft': _kpi_capft, 'gespot_c6': _kpi_gespot_c6,
         'comac': _kpi_comac, 'c6bd': _kpi_c6bd, 'police_c6': _kpi_police,
         'c6c3a': _kpi_c6c3a}
 
@@ -405,21 +411,6 @@ _KPI = {'maj': _kpi_maj, 'capft': _kpi_capft, 'gespot_c6': _kpi_gespot_c6,
 # ======================================================================
 #  SUB-CHECKS (detailed verifications per module for dashboard)
 # ======================================================================
-
-def _checks_maj(r):
-    ft = r.get('liste_ft', [0, None, 0])
-    bt = r.get('liste_bt', [0, None, 0])
-    ok_ft = ft[2] if len(ft) > 2 else 0
-    nok_ft = ft[0] if ft else 0
-    ok_bt = bt[2] if len(bt) > 2 else 0
-    nok_bt = bt[0] if bt else 0
-    return [
-        ("Correspondance FT (Excel/QGIS)", ok_ft, nok_ft,
-         f"{ok_ft} identifies, {nok_ft} introuvables"),
-        ("Correspondance BT (Excel/QGIS)", ok_bt, nok_bt,
-         f"{ok_bt} identifies, {nok_bt} introuvables"),
-    ]
-
 
 def _checks_capft(r):
     res = r.get('resultats')
@@ -538,19 +529,15 @@ def _checks_c6bd(r):
     checks = []
     df = r.get('final_df')
     if df is not None and not df.empty:
-        nok = int(df['Statut'].astype(str).str.contains('ABSENT').sum()) \
+        nok = _str_has(df['Statut'], 'ABSENT') \
             if 'Statut' in df.columns else 0
         ok = len(df) - nok
         checks.append(("Correspondance appuis C6/QGIS", ok, nok,
                         f"{ok} trouves, {nok} absents"))
     out_df = r.get('df_poteaux_out')
     n_out = len(out_df) if out_df is not None and not out_df.empty else 0
-    if n_out > 0 and r.get('be_type') == 'axione':
-        checks.append(("Poteaux hors perimetre", n_out, 0,
-                        f"{n_out} hors zones etude (normal GraceTHD - zone elargie)"))
-    else:
-        checks.append(("Poteaux hors perimetre", 0, n_out,
-                        f"{n_out} hors perimetre" if n_out > 0 else "Aucun"))
+    checks.append(("Poteaux hors perimetre", 0, n_out,
+                    f"{n_out} hors perimetre" if n_out > 0 else "Aucun"))
     verif = r.get('verif_etudes')
     if verif:
         sans_c6 = len(verif.get('etudes_sans_c6', []))
@@ -626,7 +613,7 @@ def _checks_gespot_c6(r):
     return checks
 
 _CHECKS = {
-    'maj': _checks_maj, 'capft': _checks_capft, 'gespot_c6': _checks_gespot_c6,
+    'capft': _checks_capft, 'gespot_c6': _checks_gespot_c6,
     'comac': _checks_comac, 'c6bd': _checks_c6bd, 'police_c6': _checks_police,
     'c6c3a': _checks_c6c3a,
 }
@@ -651,23 +638,14 @@ def _write_dashboard(wb, batch_results):
     ws.cell(row=3, column=1, value="Modules :").font = _F_BOLD
     ws.cell(row=3, column=2, value=str(len(batch_results))).font = _F_DATA
 
-    # QP-04: Resume executif - detect be_type and propagate to all results
+    # QP-04: Resume executif (sans distinction BE, plus de BDD)
     sro = ''
-    be_label = ''
     summary_parts = []
     for key, res in batch_results.items():
         if not sro:
             sro = res.get('fddcpi_sro', '') or ''
-        if not be_label:
-            be_label = res.get('be_type', '')
-    if be_label:
-        for res in batch_results.values():
-            if isinstance(res, dict) and 'be_type' not in res:
-                res['be_type'] = be_label
     if sro:
         summary_parts.append(f"SRO {sro}")
-    if be_label:
-        summary_parts.append(be_label.upper())
     summary_parts.append(f"{len(batch_results)} module(s)")
     for key, kpi_fn in _KPI.items():
         res = batch_results.get(key)
@@ -695,7 +673,7 @@ def _write_dashboard(wb, batch_results):
     row = 6
     t_ok, t_nok = 0, 0
 
-    for key in ['maj', 'capft', 'gespot_c6', 'comac', 'c6bd', 'police_c6', 'c6c3a']:
+    for key in ['capft', 'gespot_c6', 'comac', 'c6bd', 'police_c6', 'c6c3a']:
         res = batch_results.get(key)
         if res is None:
             continue
@@ -763,53 +741,6 @@ def _write_dashboard(wb, batch_results):
         ws.cell(row=lr + 1 + i, column=2, value=lbl).font = _F_DATA
 
     ws.freeze_panes = 'A6'
-
-
-# ======================================================================
-#  MAJ BD
-# ======================================================================
-
-def write_maj(wb, result):
-    """Write MAJ BD sheets: resume, FT, BT, introuvables."""
-    ft = result.get('liste_ft', [0, pd.DataFrame(), 0, pd.DataFrame()])
-    bt = result.get('liste_bt', [0, pd.DataFrame(), 0, pd.DataFrame()])
-    nok_ft = ft[0] if ft else 0
-    df_nok_ft = ft[1] if len(ft) > 1 else pd.DataFrame()
-    ok_ft = ft[2] if len(ft) > 2 else 0
-    df_ok_ft = ft[3] if len(ft) > 3 else pd.DataFrame()
-    nok_bt = bt[0] if bt else 0
-    df_nok_bt = bt[1] if len(bt) > 1 else pd.DataFrame()
-    ok_bt = bt[2] if len(bt) > 2 else 0
-    df_ok_bt = bt[3] if len(bt) > 3 else pd.DataFrame()
-    key = 'maj'
-
-    ws = wb.create_sheet("MAJ_RESUME")
-    _init_sheet(ws, key, ["ELEMENT", "NOMBRE", "STATUT"], [40, 12, 18])
-    data = [
-        ("FT identifies", ok_ft, "OK" if ok_ft > 0 else ""),
-        ("FT introuvables (Excel sans QGIS)", nok_ft,
-         "ANOMALIE" if nok_ft > 0 else "OK"),
-        ("BT identifies", ok_bt, "OK" if ok_bt > 0 else ""),
-        ("BT introuvables (Excel sans QGIS)", nok_bt,
-         "ANOMALIE" if nok_bt > 0 else "OK"),
-    ]
-    for r, (label, val, st) in enumerate(data, 2):
-        _row(ws, r, [label, val, st])
-        ws.cell(row=r, column=2).alignment = _AL_C
-        ws.cell(row=r, column=3).alignment = _AL_C
-        if st == "ANOMALIE":
-            ws.cell(row=r, column=3).fill = _P_ERR
-        elif st == "OK":
-            ws.cell(row=r, column=3).fill = _P_OK
-
-    if isinstance(df_ok_ft, pd.DataFrame) and not df_ok_ft.empty:
-        _df_sheet(wb, "MAJ_FT", df_ok_ft.reset_index(), key)
-    if isinstance(df_ok_bt, pd.DataFrame) and not df_ok_bt.empty:
-        _df_sheet(wb, "MAJ_BT", df_ok_bt.reset_index(), key)
-    if isinstance(df_nok_ft, pd.DataFrame) and not df_nok_ft.empty:
-        _df_sheet(wb, "MAJ_FT_INTROUV", df_nok_ft, key)
-    if isinstance(df_nok_bt, pd.DataFrame) and not df_nok_bt.empty:
-        _df_sheet(wb, "MAJ_BT_INTROUV", df_nok_bt, key)
 
 
 # ======================================================================
@@ -1027,15 +958,11 @@ def write_comac(wb, result, report_options):
     verif_portees = result.get('verif_portees')
     if verif_portees:
         ws = wb.create_sheet("COMAC_PORTEES")
-        has_gracethd = any(e.get('source_ref') == 'GraceTHD' for e in verif_portees)
         hdrs = ["ETUDE", "CABLE", "CAPA FO",
                 "DEPART PCM", "ARRIVEE PCM", "PORTEE PCM (m)",
                 "DEPART REF", "ARRIVEE REF", "PORTEE REF (m)",
                 "ECART (m)", "ECART (%)", "STATUT", "MESSAGE"]
         widths = [25, 18, 10, 18, 18, 14, 18, 18, 14, 12, 12, 14, 55]
-        if has_gracethd:
-            hdrs.insert(-2, "CONFIANCE")
-            widths.insert(-2, 10)
         _init_sheet(ws, key, hdrs, widths)
         r = 2
         for e in verif_portees:
@@ -1056,9 +983,6 @@ def write_comac(wb, result, report_options):
                 ecart_m if ecart_m else '',
                 ecart_pct if ecart_pct else '',
             ]
-            if has_gracethd:
-                conf = e.get('confiance_ref', 0)
-                vals.append(conf if conf else '')
             vals.extend([st, e.get('message', '')])
             fill = (_P_OK if st == 'OK'
                     else _P_CRIT if st == 'ECART'
@@ -1138,7 +1062,7 @@ def write_c6bd(wb, result):
     if poteaux_out is not None and not poteaux_out.empty:
         ws_out = _df_sheet(wb, "C6BD_HORS_PERIM", poteaux_out, key)
         ncols = len(poteaux_out.columns)
-        fill = _P_INFO if result.get('be_type') == 'axione' else _P_CRIT
+        fill = _P_CRIT
         for r in range(2, len(poteaux_out) + 2):
             _fill_row(ws_out, r, fill, ncols)
 
@@ -1401,7 +1325,6 @@ def _write_gespot_anomalies(wb, anomalies):
 
 
 _WRITERS = {
-    'maj': write_maj,
     'capft': write_capft,
     'gespot_c6': write_gespot_c6,
     'comac': write_comac,
@@ -1484,7 +1407,12 @@ def _write_dictionary_sheet(wb, data):
     t.alignment = _AL_C
 
     meta = data.get('metadata', {})
-    ws.cell(row=2, column=1, value=f"Version {meta.get('version', '')} | {meta.get('organization', '')}").font = Font(
+    # Inject plugin version if not already present
+    if 'plugin_version' not in meta:
+        meta['plugin_version'] = get_version()
+    # Use plugin_version if available, fallback to data dictionary version
+    version_display = meta.get('plugin_version', meta.get('version', ''))
+    ws.cell(row=2, column=1, value=f"Version {version_display} | {meta.get('organization', '')}").font = Font(
         name='Calibri', size=9, italic=True, color='555555')
 
     hdrs = ["MODULE", "FEUILLE", "COLONNE", "TYPE", "DEFINITION", "VALEURS POSSIBLES", "COULEUR"]
@@ -1665,7 +1593,7 @@ def generate_unified_report(batch_results, export_dir, report_options=None):
         _write_dashboard(wb, batch_results)
         _report_progress(report_options, 8, "Tableau de bord...", 'grey')
         module_keys = [
-            key for key in ['maj', 'capft', 'gespot_c6', 'comac', 'c6bd', 'police_c6', 'c6c3a']
+            key for key in ['capft', 'gespot_c6', 'comac', 'c6bd', 'police_c6', 'c6c3a']
             if batch_results.get(key) is not None
         ]
         total_modules = max(len(module_keys), 1)

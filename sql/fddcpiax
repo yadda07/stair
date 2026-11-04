@@ -18,12 +18,17 @@ DECLARE
     v_fallback double precision;
 BEGIN
     -- =========================================================================
-    -- 1. Infrastructure + BPE isoles
+    -- 1. Poteaux + Autres + BPE isoles (pas de chambres : plugin aerien)
     -- =========================================================================
     DROP TABLE IF EXISTS temp_infra;
     CREATE TEMP TABLE temp_infra AS
-    SELECT t0.gid_pt, t0.geom, t0.inf_type
-    FROM rip_avg_nge.infra(zasro) t0;
+    SELECT 'pot_' || p.gid AS gid_pt, p.geom, p.inf_type
+    FROM rip_avg_nge.infra_pt_pot p
+    WHERE p.sro ILIKE '%' || zasro || '%'
+    UNION ALL
+    SELECT 'atr_' || a.gid AS gid_pt, a.geom, a.inf_type
+    FROM rip_avg_nge.infra_pt_autres a
+    WHERE a.sro ILIKE '%' || zasro || '%';
 
     CREATE INDEX idx_tmp_infra_geom ON temp_infra USING GIST (geom);
 
@@ -35,47 +40,75 @@ BEGIN
         SELECT 1 FROM temp_infra ti WHERE ST_DWithin(b.geom, ti.geom, 1.0)
     );
 
-    DROP TABLE IF EXISTS temp_infra_points;
-    CREATE TEMP TABLE temp_infra_points AS
-    SELECT t_pts.gid_pt, t_pts.geom, t_pts.inf_type
-    FROM temp_infra t_pts
-    WHERE t_pts.gid_pt LIKE 'chb_%' OR t_pts.gid_pt LIKE 'pot_%'
-       OR t_pts.gid_pt LIKE 'atr_%' OR t_pts.gid_pt LIKE 'bpe_%';
+    ANALYZE temp_infra;
 
-    CREATE INDEX idx_tmp_infra_pts_geom ON temp_infra_points USING GIST (geom);
-
-    SELECT count(*) INTO v_nb_infra FROM temp_infra_points;
+    SELECT count(*) INTO v_nb_infra FROM temp_infra;
     RAISE NOTICE 'fddcpiax(%): % points infra', zasro, v_nb_infra;
     IF v_nb_infra = 0 THEN
         RAISE WARNING 'fddcpiax(%): 0 points infra -> tous les cables seront orphelins (posemode=4)', zasro;
     END IF;
 
     -- =========================================================================
-    -- 2. Cables depuis FDDCPFA (pipeline unifie NGE + Axione)
+    -- 2. Cables bruts (chargement direct, decoupe integrale a l'etape 3)
     -- =========================================================================
     DROP TABLE IF EXISTS temp_cables;
     CREATE TEMP TABLE temp_cables AS
-    SELECT t1.gid, t1.gid_dc, t1.geom, t1.sro, t1.nro, t1.cab_type, t1.cab_capa,
-           t1.cab_modulo, t1.isole, t1.date_modif, t1.modif_par, t1.cab_nature,
-           t1.commentaire, t1.collecte, t1.cb_etiquet, t1.fon, t1.projet,
-           t1."DCE", t1.dist_type, t1.affectation
-    FROM rip_avg_nge.FDDCPFA(zasro, 1) t1
-    WHERE ST_IsValid(t1.geom) AND ST_Length(t1.geom) > 0.2 AND t1.geom IS NOT NULL;
+    SELECT c.gid, c.gid::bigint AS gid_dc, c.geom, c.sro, c.nro, c.cab_type,
+           c.cab_capa, c.cab_modulo, c.isole, c.date_modif, c.modif_par,
+           c.cab_nature, c.commentaire, c.collecte, c.cb_etiquet, c.fon,
+           c.projet, c."DCE", c.dist_type, c.affectation
+    FROM rip_avg_nge.cables c
+    WHERE c.sro ILIKE '%' || zasro || '%'
+      AND c.geom IS NOT NULL
+      AND ST_IsValid(c.geom)
+      AND ST_Length(c.geom) > 0.2;
 
-    DELETE FROM temp_cables WHERE ctid IN (
-        SELECT sub.ctid FROM (
-            SELECT t.ctid, ROW_NUMBER() OVER (
-                PARTITION BY t.gid, t.gid_dc, md5(ST_AsBinary(t.geom)) ORDER BY t.ctid
-            ) AS rnum FROM temp_cables t
-        ) sub WHERE sub.rnum > 1
-    );
+    -- =========================================================================
+    -- 2b. Reduction par attaches (retracte extremites cable vers poteau)
+    --     Critique : sans retraction, les cables dont l'endpoint tombe sur
+    --     ST_EndPoint(attache) (a plusieurs metres du poteau) sortent de
+    --     p_snap_tolerance et se retrouvent orphelins a tort.
+    --     ST_StartPoint(attache) = position du poteau -> endpoint cable = poteau.
+    -- =========================================================================
+    UPDATE temp_cables tc
+    SET geom = ST_SetPoint(tc.geom, 0, att.new_pt)
+    FROM (
+        SELECT DISTINCT ON (tc2.gid, tc2.gid_dc) tc2.gid, tc2.gid_dc,
+               ST_StartPoint(a.geom) AS new_pt
+        FROM temp_cables tc2
+        JOIN rip_avg_nge.attaches a
+          ON ST_Intersects(ST_StartPoint(tc2.geom), a.geom)
+         AND a.sro ILIKE '%' || zasro || '%'
+        ORDER BY tc2.gid, tc2.gid_dc,
+               ST_Distance(ST_StartPoint(tc2.geom), a.geom)
+    ) att
+    WHERE tc.gid = att.gid AND tc.gid_dc = att.gid_dc;
+
+    UPDATE temp_cables tc
+    SET geom = ST_SetPoint(tc.geom, ST_NumPoints(tc.geom) - 1, att.new_pt)
+    FROM (
+        SELECT DISTINCT ON (tc2.gid, tc2.gid_dc) tc2.gid, tc2.gid_dc,
+               ST_StartPoint(a.geom) AS new_pt
+        FROM temp_cables tc2
+        JOIN rip_avg_nge.attaches a
+          ON ST_Intersects(ST_EndPoint(tc2.geom), a.geom)
+         AND a.sro ILIKE '%' || zasro || '%'
+        ORDER BY tc2.gid, tc2.gid_dc,
+               ST_Distance(ST_EndPoint(tc2.geom), a.geom)
+    ) att
+    WHERE tc.gid = att.gid AND tc.gid_dc = att.gid_dc;
+
+    DELETE FROM temp_cables tc
+    WHERE ST_Length(tc.geom) < 0.2 OR NOT ST_IsValid(tc.geom);
 
     CREATE INDEX idx_tmp_cables_geom ON temp_cables USING GIST (geom);
 
+    ANALYZE temp_cables;
+
     SELECT count(*) INTO v_nb_cables FROM temp_cables;
-    RAISE NOTICE 'fddcpiax(%): % cables charges', zasro, v_nb_cables;
+    RAISE NOTICE 'fddcpiax(%): % cables bruts charges', zasro, v_nb_cables;
     IF v_nb_cables = 0 THEN
-        RAISE WARNING 'fddcpiax(%): 0 cables charges depuis FDDCPFA', zasro;
+        RAISE WARNING 'fddcpiax(%): 0 cables pour ce SRO', zasro;
         RETURN;
     END IF;
 
@@ -90,38 +123,37 @@ BEGIN
     -- =========================================================================
     RETURN QUERY
     WITH
-    -- 3a. Projections mid-cable (evite micro-segments aux extremites)
-    cable_mid_projs AS (
-        SELECT t2.gid AS cable_gid, t2.gid_dc, t2.geom AS cable_geom,
-               ST_Collect(proj.pt) AS proj_points
-        FROM temp_cables t2
-        JOIN temp_infra_points ip ON ST_DWithin(t2.geom, ip.geom, p_snap_tolerance)
-        CROSS JOIN LATERAL (SELECT ST_ClosestPoint(t2.geom, ip.geom) AS pt) proj
-        WHERE ST_LineLocatePoint(t2.geom, proj.pt) BETWEEN 0.01 AND 0.99
-        GROUP BY t2.gid, t2.gid_dc, t2.geom
-    ),
-    -- 3b. Snap + Split (inline, pas de CTE intermediaire)
-    split_segments AS (
-        SELECT cp.cable_gid AS gid, cp.gid_dc,
-               (ST_Dump(ST_Split(
-                   ST_Snap(cp.cable_geom, cp.proj_points, 0.01),
-                   cp.proj_points
-               ))).geom AS geom
-        FROM cable_mid_projs cp
-    ),
-    -- 3c. Passthrough : cables avec infra a proximite mais pas de projection mid
-    --     (cable qui se TERMINE a un appui sans passer par d'autres)
-    passthrough AS (
-        SELECT tc.gid, tc.gid_dc, tc.geom
+    -- 3a. Classification unique : 1 seul scan spatial temp_cables x temp_infra
+    --     Pre-calcule mid_projs (points mid-cable) + nb_infra_near (decision orphan)
+    cable_classification AS (
+        SELECT tc.gid AS cable_gid, tc.gid_dc, tc.geom AS cable_geom,
+               ST_Collect(p.proj_pt) FILTER (
+                   WHERE p.proj_pt IS NOT NULL
+                     AND ST_LineLocatePoint(tc.geom, p.proj_pt) BETWEEN 0.01 AND 0.99
+               ) AS mid_projs,
+               COUNT(ip.gid_pt) AS nb_infra_near
         FROM temp_cables tc
-        WHERE NOT EXISTS (
-            SELECT 1 FROM cable_mid_projs cp
-            WHERE cp.cable_gid = tc.gid AND cp.gid_dc = tc.gid_dc
-        )
-        AND EXISTS (
-            SELECT 1 FROM temp_infra_points ip
-            WHERE ST_DWithin(tc.geom, ip.geom, p_snap_tolerance)
-        )
+        LEFT JOIN temp_infra ip ON ST_DWithin(tc.geom, ip.geom, p_snap_tolerance)
+        LEFT JOIN LATERAL (
+            SELECT ST_ClosestPoint(tc.geom, ip.geom) AS proj_pt
+        ) p ON TRUE
+        GROUP BY tc.gid, tc.gid_dc, tc.geom
+    ),
+    -- 3b. Split (cables avec au moins une projection mid-cable)
+    split_segments AS (
+        SELECT cc.cable_gid AS gid, cc.gid_dc,
+               (ST_Dump(ST_Split(
+                   ST_Snap(cc.cable_geom, cc.mid_projs, 0.01),
+                   cc.mid_projs
+               ))).geom AS geom
+        FROM cable_classification cc
+        WHERE cc.mid_projs IS NOT NULL
+    ),
+    -- 3c. Passthrough (infra aux extremites uniquement, pas de split)
+    passthrough AS (
+        SELECT cc.cable_gid AS gid, cc.gid_dc, cc.cable_geom AS geom
+        FROM cable_classification cc
+        WHERE cc.mid_projs IS NULL AND cc.nb_infra_near > 0
     ),
     -- 3d. Union split + passthrough, dedup, numerotation
     all_segments AS (
@@ -153,7 +185,7 @@ BEGIN
                em.gid_pt AS end_infra, em.inf_type AS end_inf_type
         FROM endpoints e
         LEFT JOIN LATERAL (
-            SELECT ip.gid_pt, ip.inf_type FROM temp_infra_points ip
+            SELECT ip.gid_pt, ip.inf_type FROM temp_infra ip
             WHERE ST_DWithin(e.sp, ip.geom, v_fallback)
             ORDER BY
                 CASE WHEN ST_DWithin(e.sp, ip.geom, p_snap_tolerance) THEN 0 ELSE 1 END,
@@ -162,7 +194,7 @@ BEGIN
             LIMIT 1
         ) sm ON TRUE
         LEFT JOIN LATERAL (
-            SELECT ip.gid_pt, ip.inf_type FROM temp_infra_points ip
+            SELECT ip.gid_pt, ip.inf_type FROM temp_infra ip
             WHERE ST_DWithin(e.ep, ip.geom, v_fallback)
             ORDER BY
                 CASE WHEN ST_DWithin(e.ep, ip.geom, p_snap_tolerance) THEN 0 ELSE 1 END,
@@ -177,11 +209,6 @@ BEGIN
             CASE
                 WHEN (im.start_infra LIKE 'atr_%' AND im.start_inf_type = 'FAC') OR
                      (im.end_infra LIKE 'atr_%' AND im.end_inf_type = 'FAC') THEN 2
-                WHEN im.start_infra LIKE 'chb_%' AND im.end_infra LIKE 'chb_%' THEN 0
-                WHEN (im.start_infra LIKE 'chb_%' AND im.end_infra LIKE 'atr_%') OR
-                     (im.start_infra LIKE 'atr_%' AND im.end_infra LIKE 'chb_%') THEN 0
-                WHEN (im.start_infra LIKE 'pot_%' AND im.end_infra LIKE 'chb_%') OR
-                     (im.start_infra LIKE 'chb_%' AND im.end_infra LIKE 'pot_%') THEN 0
                 WHEN (im.start_infra LIKE 'pot_%' AND im.end_infra LIKE 'atr_%' AND im.end_inf_type = 'ADR') OR
                      (im.start_infra LIKE 'atr_%' AND im.start_inf_type = 'ADR' AND im.end_infra LIKE 'pot_%') THEN 0
                 WHEN im.start_infra LIKE 'pot_%' AND im.end_infra LIKE 'pot_%' THEN 1
@@ -189,8 +216,6 @@ BEGIN
                      (im.start_infra LIKE 'atr_%' AND im.start_inf_type = 'IMM' AND im.end_infra LIKE 'pot_%') THEN 1
                 WHEN (im.start_infra LIKE 'bpe_%' AND im.end_infra LIKE 'pot_%') OR
                      (im.start_infra LIKE 'pot_%' AND im.end_infra LIKE 'bpe_%') THEN 1
-                WHEN (im.start_infra LIKE 'bpe_%' AND im.end_infra LIKE 'chb_%') OR
-                     (im.start_infra LIKE 'chb_%' AND im.end_infra LIKE 'bpe_%') THEN 0
                 ELSE 4
             END AS posemode
         FROM infra_match im
@@ -207,7 +232,7 @@ BEGIN
         FROM posemode_calc pc
         JOIN temp_cables t8 ON pc.gid = t8.gid AND pc.gid_dc = t8.gid_dc
     ),
-    -- 3h. Orphelins : aucune infra a proximite du cable entier
+    -- 3h. Orphelins via classification (pas de scan spatial supplementaire)
     orphan_cables AS (
         SELECT (900000 + ROW_NUMBER() OVER (ORDER BY tc.gid_dc, tc.gid))::bigint AS gid_dc2,
                tc.gid_dc, tc.gid, tc.sro, tc.nro,
@@ -218,10 +243,9 @@ BEGIN
                tc.fon, tc.projet, tc."DCE", tc.dist_type, tc.affectation,
                4 AS posemode
         FROM temp_cables tc
-        WHERE NOT EXISTS (
-            SELECT 1 FROM temp_infra_points ip
-            WHERE ST_DWithin(tc.geom, ip.geom, p_snap_tolerance)
-        )
+        JOIN cable_classification cc
+          ON cc.cable_gid = tc.gid AND cc.gid_dc = tc.gid_dc
+        WHERE cc.nb_infra_near = 0
     )
     SELECT * FROM results
     UNION ALL
@@ -243,17 +267,19 @@ GRANT EXECUTE ON FUNCTION rip_avg_nge.fddcpiax(text, double precision) TO sdupay
 
 COMMENT ON FUNCTION rip_avg_nge.fddcpiax(text, double precision)
     IS '
-FDDCPIAX - Pipeline unifie de decoupe cable (NGE + Axione).
+FDDCPIAX - Pipeline unifie de decoupe cable aerien (NGE + Axione).
 
-Remplace fddcpi2 comme point d''entree unique. Pas de delegation.
+Remplace fddcpi2 comme point d''entree unique. Autonome, pas de delegation.
 
 Pipeline :
-1. Infra (poteaux, chambres, autres) + BPE isoles (>1m de toute infra)
-2. Cables depuis FDDCPFA, dedup par (gid, gid_dc, geom_hash)
-3. Projection perpendiculaire : ST_ClosestPoint(cable, infra) -> point SUR le cable
-   Split si projection mid-cable (1%-99%)
-   Passthrough si infra uniquement aux extremites (pas de split)
-   Orphelins si aucune infra a proximite -> posemode=4
+1. Infra aerienne (poteaux + autres + BPE isoles >1m). Pas de chambres.
+2. Cables bruts depuis rip_avg_nge.cables.
+   2b. Retraction des extremites cable vers poteau via attaches
+       (endpoint touchant attache -> ST_StartPoint(attache) = poteau).
+3. Classification unique (1 seul scan spatial) :
+   - split  : cable avec projection mid-cable (1%-99%)
+   - passthrough : infra uniquement aux extremites
+   - orphan : aucune infra a proximite -> posemode=4
 4. Association endpoint-infra (LATERAL JOIN 2 tiers) :
    Tier 1 = p_snap_tolerance (match direct)
    Tier 2 = fallback GREATEST(5m, 2*tolerance)
@@ -264,6 +290,3 @@ Parametres :
 - zasro : identifiant SRO
 - p_snap_tolerance : rayon de recherche infra en metres (defaut 0.70)
 ';
-
-
-

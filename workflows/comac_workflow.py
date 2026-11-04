@@ -1,16 +1,25 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 Workflow pour l'analyse COMAC.
 Orchestre l'extraction des données, l'analyse asynchrone et l'export Excel.
 """
 
 from qgis.PyQt.QtCore import QObject, pyqtSignal
+from qgis.PyQt.QtWidgets import QApplication
 from qgis.core import Qgis, QgsMessageLog
 from ..compat import MSG_INFO, MSG_WARNING, MSG_CRITICAL, FIELD_TYPE_STRING, FIELD_TYPE_INT, FIELD_TYPE_DOUBLE, FIELD_TYPE_LONGLONG
 from ..Comac import Comac
 from ..async_tasks import ComacTask, ExcelExportTask, run_async_task
 from ..core_utils import build_export_path
-from ..db_connection import extract_sro_from_layer
+from ..qgis_utils import extract_sro_from_layer
 from ..cable_analyzer import extraire_appuis_wkb
 from ..qgis_utils import show_feature_count
 from ..perf_logger import PerfLogger
@@ -45,8 +54,7 @@ class ComacWorkflow(QObject):
 
     def start_analysis(self, lyr_pot, lyr_comac, col_comac, chemin_comac, chemin_export,
                         fddcpi_cache=None, sro_appuis_cache=None,
-                        be_type='nge', gracethd_dir='', sro=None,
-                        spatial_tolerance=7.5):
+                        sro=None, spatial_tolerance=7.5):
         """
         Lance l'analyse COMAC.
         
@@ -72,8 +80,7 @@ class ComacWorkflow(QObject):
         try:
             doublons, hors_etude, dico_qgis, dico_poteaux_prives, all_inf_nums, coords_qgis = (
                 self.comac_logic.extraire_donnees_comac(
-                    lyr_pot.name(), lyr_comac.name(), col_comac,
-                    be_type=be_type
+                    lyr_pot.name(), lyr_comac.name(), col_comac
                 )
             )
         except ValueError as e:
@@ -97,11 +104,11 @@ class ComacWorkflow(QObject):
             sro = sro_appuis_cache.get('sro') or sro
         if not sro:
             sro = extract_sro_from_layer(lyr_pot)
-        # Appuis WKB: toujours extraire avec keep_commune=True (COMAC a besoin
-        # de /commune pour distinguer poteaux de communes differentes).
-        # Ne pas reutiliser le cache Police C6 qui est sans commune.
+        # Appuis WKB: reutiliser appuis_wkb_commune si pre-extrait en passe unique
         appuis_wkb = []
-        if sro:
+        if sro_appuis_cache and sro_appuis_cache.get('appuis_wkb_commune') is not None:
+            appuis_wkb = sro_appuis_cache['appuis_wkb_commune']
+        elif sro:
             _t1 = time.perf_counter()
             appuis_wkb = extraire_appuis_wkb(lyr_pot, keep_commune=True)
             PerfLogger.record('comac', 'appuis_wkb_extract',
@@ -112,20 +119,18 @@ class ComacWorkflow(QObject):
                 "PoleAerien", MSG_WARNING
             )
 
-        # 3. Préparation des données pour la Task
+        # 3. Preparation des donnees pour la Task (lecture Excel COMAC dans le worker QgsTask)
         fichier_export = build_export_path(chemin_export, "ANALYSE_COMAC.xlsx")
-        
+
         params = {
             'chemin_comac': chemin_comac,
             'fichier_export': fichier_export,
             'zone_climatique': 'ZVN',
             'sro': sro,
             'fddcpi_cables_cache': fddcpi_cache,
-            'be_type': be_type,
-            'gracethd_dir': gracethd_dir,
             'spatial_tolerance': spatial_tolerance,
         }
-        
+
         qgis_data = {
             'doublons': list(doublons),
             'hors_etude': list(hors_etude),
@@ -136,7 +141,7 @@ class ComacWorkflow(QObject):
             'coords_qgis': coords_qgis,
         }
 
-        # 3. Lancement Task Asynchrone
+        # Lancement Task Asynchrone (fusion / comparaison uniquement)
         self.current_task = ComacTask(params, qgis_data)
         
         self.current_task.signals.progress.connect(self.progress_changed)
@@ -151,7 +156,6 @@ class ComacWorkflow(QObject):
         """Charge la couche cables fddcpi2 dans QGIS puis emet analysis_finished."""
         cables_all = result.get('fddcpi_cables_all')
         sro = result.get('fddcpi_sro', '')
-        be_type = result.get('be_type', 'nge')
 
         if cables_all:
             cables_aerial = [
@@ -173,7 +177,7 @@ class ComacWorkflow(QObject):
             ]
             if cables_for_layer:
                 try:
-                    self._load_cables_layer(cables_for_layer, sro, be_type)
+                    self._load_cables_layer(cables_for_layer, sro)
                 except Exception as e:
                     self.message_received.emit(
                         f"[!] Erreur chargement couche cables: {e}", "orange"
@@ -181,16 +185,15 @@ class ComacWorkflow(QObject):
 
         self.analysis_finished.emit(result)
 
-    def _load_cables_layer(self, cables, sro, be_type='nge'):
-        """Charge les cables (fddcpi2 ou GraceTHD) comme couche temporaire dans QGIS."""
+    def _load_cables_layer(self, cables, sro):
+        """Charge les cables recales comme couche temporaire dans QGIS."""
         import warnings
         from qgis.core import (
             QgsVectorLayer, QgsFeature, QgsGeometry, QgsField, QgsProject
         )
 
         sro_safe = sro.replace('/', '_')
-        prefix = 'gracethd_cables' if be_type == 'axione' else 'fddcpi2'
-        layer_name = f"{prefix}_{sro_safe}"
+        layer_name = f"cables_recales_{sro_safe}"
 
         layer = QgsVectorLayer(
             "LineString?crs=EPSG:2154",

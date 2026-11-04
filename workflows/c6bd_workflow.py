@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 Workflow pour l'analyse C6 vs BD.
 
@@ -14,12 +22,14 @@ Fonctionnalités:
 """
 
 from qgis.PyQt.QtCore import QObject, pyqtSignal, QTimer
+from qgis.PyQt.QtWidgets import QApplication
 from qgis.core import Qgis, QgsMessageLog
 from ..compat import MSG_WARNING, MSG_CRITICAL
 from ..C6_vs_Bd import C6_vs_Bd
 from ..async_tasks import C6BdTask, ExcelExportTask, run_async_task
 from ..core_utils import build_export_path
 import os
+import pandas as pd
 
 
 class C6BdWorkflow(QObject):
@@ -29,7 +39,7 @@ class C6BdWorkflow(QObject):
     Architecture non-bloquante:
     - Extraction QGIS découpée en étapes avec QTimer
     - UI reste fluide entre chaque étape
-    - Traitement lourd (Excel) dans QgsTask
+    - Lecture Excel sur thread principal ; fusion pandas en QgsTask
     """
     
     # Signaux relayés vers l'UI
@@ -147,36 +157,33 @@ class C6BdWorkflow(QObject):
             state['verif_etudes'] = None
 
         self.progress_changed.emit(50)
-        self.message_received.emit("Lecture fichiers Excel C6...", "blue")
-        
-        # Étape 4: Lancer la task async
         QTimer.singleShot(0, self._step4_launch_async_task)
 
     def _step4_launch_async_task(self):
-        """Étape 4: Lancer la tâche asynchrone (lecture Excel + fusion)."""
+        """Etape 4: Lancer la tache asynchrone (lecture Excel C6 + fusion pandas)."""
         if self._cancelled:
             return
-        
+
         state = self._extraction_state
         chemin_export = state['chemin_export']
-        
+
         fichier_export = build_export_path(chemin_export, "analyse_c6_bd.xlsx")
-        
+
         params = {
             'repertoire_c6': state['chemin_c6'],
             'fichier_export': fichier_export
         }
-        
+
         df_qgis = state['df_qgis']
         df_out = state['df_poteaux_out']
-        
+
         qgis_data = {
             'df_qgis': df_qgis.copy() if df_qgis is not None else None,
             'df_poteaux_out': df_out.copy() if df_out is not None else None,
-            'verif_etudes': state['verif_etudes']
+            'verif_etudes': state['verif_etudes'],
         }
 
-        # Lancement Task Asynchrone (lecture Excel + fusion)
+        # Lancement Task Asynchrone (fusion pandas uniquement)
         self.current_task = C6BdTask(params, qgis_data)
         
         self.current_task.signals.progress.connect(self.progress_changed)

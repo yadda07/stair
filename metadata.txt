@@ -6,11 +6,11 @@ name=ST-AIR
 qgisMinimumVersion=3.28
 qgisMaximumVersion=4.99
 description=Controle qualite des livrables sous-traitants FTTH aerien. Analyse croisee shapefiles + Excel + CSV, rapport unifie multi-modules.
-version=3.2.0
-author=ST-AIR
-email=support@st-air.local
+version=4.2.0
+author=ST-AIR, Youcef ADDA
+email=youcef.geodesien@gmail.com
 
-about=Plugin QGIS pour sous-traitants FTTH : verifie la coherence des livrables aeriens (poteaux, cables, boitiers) en croisant les shapefiles fournis avec les fichiers Excel de terrain (CAP_FT, COMAC, C6) et les exports CSV GSPOT. Tout fonctionne en local, sur le dossier du projet, sans connexion a un serveur distant.
+about=Plugin QGIS pour sous-traitants FTTH : verifie la coherence des livrables aeriens (poteaux, cables, boitiers) en croisant les shapefiles fournis avec les fichiers Excel de terrain (CAP_FT, COMAC, C6) et les exports CSV GSPOT. Tout fonctionne en local, sur le dossier du projet, sans connexion a un serveur distant. Contribution : Youcef ADDA | GEODECI. Développement de plugins QGIS et de solutions SIG ; administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement des entreprises. EN: QGIS plugin and GIS solution development; PostgreSQL/PostGIS administration; GIS audits, workflow automation and business support. AR: تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية، وإدارة قواعد البيانات، والتدقيق وأتمتة سير العمل ومرافقة المؤسسات. Contact / للتواصل : youcef.geodesien@gmail.com | contact@geodeci.xyz | https://geodeci.xyz/
 
     5 modules d'analyse (chaque module produit une feuille dans un rapport Excel unique) :
     - MAJ BD : import des fichiers Excel FT-BT KO, preparation des modifications a appliquer sur le shapefile des poteaux.
@@ -40,6 +40,14 @@ repository=https://example.org/st-air
 hasProcessingProvider=no
 
 changelog=
+    4.2.0 (2026-11-04) - Optimisation ressources, mode asynchrone integral (QgsTask + ThreadPoolExecutor sans blocage UI), requetes PyQGIS ciblees (setSubsetOfAttributes, FR_NO_GEOMETRY, QgsSpatialIndex) et gestion memoire complete.
+    4.1.0 (2026-11-03) - Modernisation de l'interface (jetons WCAG AA, surfaces Fluent/VTT, grille Bento, ParcoursVisuel) et ouverture de la documentation dans un panneau ancrable QGIS (QgsDockWidget).
+    4.0.1 (2026-07-09) - Corrections GESPOT : NULL/Non équivalents, fallback stratégie sur carac1-5, contrôles adresse/centre désactivés.
+    4.0.0 (2026-07) - Major version bump
+        - Export GPKG pour sous-traitants (module gpkg_pipeline)
+        - Mode BDD/GPKG avec toggle interne (AuthProbe PostgreSQL)
+        - Interface V2 : icônes Tabler, toggle Apple-style
+        - Securite : QgsAuthManager, preflight checks, anti-fuite DSN
     3.2.0 (2026-04) - Renommage ST-AIR, documentation sous-traitant
         - Plugin renomme ST-AIR (Sous-Traitant AERIEN)
         - Guide sous-traitant complet (docs/GUIDE_SOUS_TRAITANT.md)
@@ -81,7 +89,7 @@ changelog=
 # Tags are comma separated with spaces allowed
 tags=FTTH, fibre optique, poteau, aerien, sous-traitant, controle qualite, CAP_FT, COMAC, C6, GESPOT, Excel, shapefile, analyse
 
-homepage=https://example.org/st-air
+homepage=https://geodeci.xyz/
 category=Vector
 icon=images/icon.svg
 

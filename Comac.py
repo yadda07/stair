@@ -1,4 +1,12 @@
 #!/usr/bin/python
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 
 # -*- coding: utf-8 -*-
 
@@ -7,7 +15,7 @@
 import os
 import re
 
-import openpyxl
+from .lib_compat import list_xlsx_sheet_names_stdlib, read_xlsx_sheet_stdlib, xlsx_cell_1based
 
 from .qgis_utils import extraire_poteaux_etude
 
@@ -120,13 +128,11 @@ class Comac:
 
         
 
-        # Chaque reference commence par L, suivie de chiffres-chiffres, optionnellement -P
-
-        # Ex: L1092-13-P, L1092-15 (sans -P)
-
-        # Gere les concatenations avec ou sans tiret: L1092-13-P-L1092-14-P ou L1092-13-PL1092-14-P
-
-        return re.findall(r'L\d+-\d+(?:-P)?', valeur, re.IGNORECASE)
+        # Codes L1092 (gamme standard) et A-Hxxxx (gamme H Prysmian)
+        # Ex: L1092-13-P, L1092-15 (sans -P), A-H0342A-24F-60-P, A-H0388A-6FO-0-P
+        refs = re.findall(r'L\d+-\d+(?:-P)?', valeur, re.IGNORECASE)
+        refs += re.findall(r'A-H\d+[A-Z]?-\d+(?:F|FO)-\d+(?:-P)?', valeur, re.IGNORECASE)
+        return refs
 
 
 
@@ -178,28 +184,20 @@ class Comac:
 
 
 
-    def extraire_donnees_comac(self, table_poteau, table_etude_comac, colonne_comac,
-                               be_type='nge'):
+    def extraire_donnees_comac(self, table_poteau, table_etude_comac, colonne_comac):
 
         """Extraction complete COMAC en une seule passe.
-
-        
-        Args:
-            be_type: 'nge' (POT-BT uniquement) ou 'axione' (POT-FT + POT-BT)
 
         Returns:
 
             tuple: (doublons, hors_etude, dico_qgis, dico_poteaux_prives)
 
         """
-        # Axione: COMAC inclut FT + BT ; NGE: COMAC = BT uniquement
-        pot_filter = 'POT-%' if be_type == 'axione' else 'POT-BT'
-
         return extraire_poteaux_etude(
 
             table_poteau, table_etude_comac, colonne_comac,
 
-            pot_filter, 'COMAC', keep_commune=True
+            'POT-BT', 'COMAC', keep_commune=True
 
         )
 
@@ -326,31 +324,25 @@ class Comac:
 
                         try:
 
-                            document = openpyxl.load_workbook(filepath, data_only=True)
+                            sheet_names = list_xlsx_sheet_names_stdlib(filepath)
 
-                        except Exception as e:
+                            if not sheet_names:
 
-                            impossibiliteDelireFichier[filepath] = str(e)
+                                impossibiliteDelireFichier[filepath] = "Aucune feuille"
 
-                            continue
+                                continue
 
-
-
-                        try:
-
-                            feuille_1 = document.worksheets[0]
+                            all_rows = read_xlsx_sheet_stdlib(filepath, sheet_names[0])
 
                             code_insee_fichier = self._normalize_insee_code(
 
-                                feuille_1.cell(row=1, column=9).value
+                                xlsx_cell_1based(all_rows, 1, 9)
 
                             )
 
                         except Exception as e:
 
                             impossibiliteDelireFichier[filepath] = f"Feuille illisible : {e}"
-
-                            document.close()
 
                             continue
 
@@ -364,15 +356,23 @@ class Comac:
 
 
 
-                        # Lecture à partir de la ligne 4
+                        # Lecture à partir de la ligne 4 (stdlib, pas openpyxl/lxml)
 
-                        # Col A (idx 0): N° poteau, Col G (idx 6): distance cable/BT
+                        for row_num in range(4, len(all_rows) + 1):
 
-                        # Col AO (idx 40): Type ligne FO, Col AU (idx 46): Longueur à facturer
+                            raw = all_rows[row_num - 1]
 
-                        for row in feuille_1.iter_rows(min_row=4, min_col=1, max_col=50, values_only=True):
+                            row = list(raw) if raw else []
 
-                            # Validation NULL stricte (pattern Maj_Ft_Bt.py)
+                            if len(row) < 50:
+
+                                row.extend([None] * (50 - len(row)))
+
+                            else:
+
+                                row = row[:50]
+
+                            # Validation NULL stricte
 
                             if not row or len(row) == 0:
 
@@ -1064,7 +1064,10 @@ class Comac:
 
         dicoPotBt_NonResolu = resultatsFinaux[5] if len(resultatsFinaux) > 5 else {}
 
+        from .lib_compat import ensure_openpyxl_safe_backend
 
+        ensure_openpyxl_safe_backend()
+        import openpyxl
 
         fichierXlsx = openpyxl.workbook.Workbook()
 
@@ -1625,6 +1628,11 @@ class Comac:
         if supports_pm is None:
 
             supports_pm = []
+
+        from .lib_compat import ensure_openpyxl_safe_backend
+
+        ensure_openpyxl_safe_backend()
+        import openpyxl
 
         fichierXlsx = openpyxl.workbook.Workbook()
 

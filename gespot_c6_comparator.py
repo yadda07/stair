@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 Lecture des fichiers C6 Excel et comparaison champ par champ avec GESPOT.
 
@@ -9,8 +17,11 @@ de comparaison C1-C11 par appui.
 Zéro dépendance QGIS - thread-safe.
 """
 
+import io
+import logging
 import os
 import re as _re
+import time
 import warnings
 import xml.etree.ElementTree as _ET
 import zipfile as _zipfile
@@ -18,16 +29,39 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-import openpyxl
+# FIX Windows fatal exception (access violation) dans openpyxl.read_manifest :
+# force openpyxl a utiliser xml.etree.ElementTree (pur Python, thread-safe)
+# au lieu de lxml/libxml2 (non thread-safe quand il est appele depuis un
+# thread worker QgsTask pendant que GDAL utilise deja libxml2). Ceinture et
+# bretelles avec le setdefault dans __init__.py : si ce module est importe
+# directement (tests, outils hors QGIS), la garde reste active.
+os.environ.setdefault("OPENPYXL_LXML", "False")
+
+import openpyxl  # noqa: E402
 
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 warnings.filterwarnings("ignore", category=ResourceWarning, module="openpyxl")
 
+_log = logging.getLogger(__name__)
+
+if getattr(openpyxl, "LXML", False):
+    _log.warning(
+        "openpyxl_lxml_still_enabled module=%s "
+        "OPENPYXL_LXML=False arrive trop tard : openpyxl a ete importe avant "
+        "par un autre composant. Risque de crash natif (access violation) "
+        "persiste tant que QGIS n'est pas redemarre.",
+        __name__,
+    )
+
 from .core_utils import is_plugin_output_file, normalize_appui_num
 from .gespot_reader import GespotRecord, GespotLoadResult
+from .lib_compat import (
+    list_xlsx_sheet_names_stdlib,
+    read_xlsx_sheet_stdlib,
+    xlsx_cell_1based,
+)
 
-_PLACEHOLDERS_NUM_VOIE = {'9999', '99999'}
-_RE_LEADING_NUM = _re.compile(r'^(\d+)\s+')
+_RE_HAUBAN_SUFFIX = _re.compile(r'\s+S\d+$', _re.IGNORECASE)
 
 
 # ===========================================================================
@@ -195,19 +229,85 @@ def _safe_cell(row_tuple, idx: int) -> str:
     return ''
 
 
-def _read_whitelist(wb: openpyxl.Workbook) -> set:
+def _read_whitelist_stdlib(filepath: str) -> set:
+    """Whitelist strategie depuis onglet Bases (stdlib, thread-safe)."""
     whitelist = set()
-    if 'Bases' not in wb.sheetnames:
+    if 'Bases' not in list_xlsx_sheet_names_stdlib(filepath):
         return whitelist
-    ws = wb['Bases']
-    for row_idx in range(_BASES_STRAT_ROW_START, ws.max_row + 1):
-        val = ws.cell(row=row_idx, column=_BASES_STRAT_COL).value
+    rows = read_xlsx_sheet_stdlib(filepath, 'Bases')
+    for row_idx in range(_BASES_STRAT_ROW_START, len(rows) + 1):
+        val = xlsx_cell_1based(rows, row_idx, _BASES_STRAT_COL)
         if val is None:
             continue
         s = str(val).strip()
         if s.lower() not in _BASES_STRAT_EXCLUDED:
             whitelist.add(s)
     return whitelist
+
+
+_MIN_XLSX_BYTES = 128       # en dessous = fichier vide/tronque (xlsx reel >= 5 Ko)
+_READ_RETRIES = 1           # 1 retry sur OSError (verrou antivirus/Excel, OneDrive)
+_READ_BACKOFF_S = 0.5
+_BREADCRUMB_NAME = "PoleAerien_xlsx_inflight.txt"
+
+
+def _get_breadcrumb_path() -> str:
+    """Chemin du breadcrumb disque. Lazy-import QGIS (module thread-safe)."""
+    try:
+        from qgis.core import QgsApplication
+        base_dir = os.path.dirname(QgsApplication.qgisUserDatabaseFilePath())
+    except Exception:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, _BREADCRUMB_NAME)
+
+
+def _write_breadcrumb(msg: str) -> None:
+    """Ecrit un breadcrumb avec fsync : survit a un crash natif du process."""
+    try:
+        path = _get_breadcrumb_path()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"{datetime.now().isoformat()} | {msg}\n")
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError:
+        pass
+
+
+def _clear_breadcrumb() -> None:
+    """Efface le breadcrumb apres succes. Echec silencieux si impossible."""
+    try:
+        path = _get_breadcrumb_path()
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def _read_file_to_bytes(filepath: str) -> bytes:
+    """Lit l'integralite d'un fichier en RAM avec retry sur OSError transitoire.
+
+    Couvre : verrous Excel/antivirus, placeholders OneDrive non-telecharges,
+    shares reseau lents, fichiers en cours d'ecriture par un autre process.
+    """
+    last_exc: Optional[OSError] = None
+    for attempt in range(_READ_RETRIES + 1):
+        try:
+            with open(filepath, "rb") as fh:
+                return fh.read()
+        except OSError as exc:
+            last_exc = exc
+            if attempt < _READ_RETRIES:
+                _log.debug(
+                    "xlsx_read_retry file=%s attempt=%d error=%s",
+                    os.path.basename(filepath), attempt + 1, exc,
+                )
+                time.sleep(_READ_BACKOFF_S * (attempt + 1))
+                continue
+            raise
+    # Unreachable : le for-else garantit raise, mais le type-checker est content.
+    if last_exc is not None:
+        raise last_exc
+    return b""
 
 
 def _validate_xlsx_zip(filepath: str) -> Optional[str]:
@@ -235,45 +335,119 @@ def _validate_xlsx_zip(filepath: str) -> Optional[str]:
     return None
 
 
-def _read_one_c6(filepath: str,
-                 fname: str) -> Tuple[Optional[dict], set, List[dict]]:
-    """Lit un fichier C6 Excel. Retourne (records_dict, whitelist, anomalies)."""
-    anomalies = []
+def _safe_load_workbook(filepath: str, fname: str):
+    """Charge un .xlsx en securisant toutes les frontieres a risque.
+
+    Pipeline defensif :
+        1. Existence + taille minimale (filtre vide/tronque)
+        2. Lecture integrale en RAM avec retry (detecte verrou/placeholder)
+        3. Integrite ZIP + manifest XML via stdlib ET (thread-safe)
+        4. Breadcrumb disque fsync-e AVANT appel openpyxl (diagnostic post-crash)
+        5. openpyxl.load_workbook sur BytesIO (pas de double-open racy disk)
+        6. Breadcrumb efface apres succes
+
+    Logs :
+        xlsx_load_start file=... bytes=...
+        xlsx_load_done  file=... bytes=... elapsed_ms=... sheets=...
+        xlsx_*_failed   file=... error=...
+
+    Returns:
+        (workbook, None) en cas de succes,
+        (None, error_message) en cas d'echec (message destine a l'utilisateur).
+    """
+    fname_log = fname or os.path.basename(filepath)
+
+    if not os.path.exists(filepath):
+        _log.warning("xlsx_missing file=%s path=%s", fname_log, filepath)
+        return None, "Fichier introuvable"
+
+    try:
+        size = os.path.getsize(filepath)
+    except OSError as exc:
+        _log.warning("xlsx_stat_failed file=%s error=%s", fname_log, exc)
+        return None, f"Impossible de lire la taille du fichier: {exc}"
+
+    if size < _MIN_XLSX_BYTES:
+        _log.warning("xlsx_too_small file=%s bytes=%d", fname_log, size)
+        return None, (
+            f"Fichier trop petit ({size} octets), probablement vide ou tronque"
+        )
+
+    try:
+        data = _read_file_to_bytes(filepath)
+    except OSError as exc:
+        _log.warning("xlsx_read_failed file=%s error=%s", fname_log, exc)
+        return None, f"Erreur lecture: {exc}"
+
+    if len(data) != size:
+        _log.warning(
+            "xlsx_partial_read file=%s expected=%d got=%d",
+            fname_log, size, len(data),
+        )
+        return None, f"Lecture partielle: attendu {size} octets, lu {len(data)}"
 
     zip_err = _validate_xlsx_zip(filepath)
     if zip_err:
+        _log.warning(
+            "xlsx_preflight_failed file=%s bytes=%d error=%s",
+            fname_log, len(data), zip_err,
+        )
+        return None, zip_err
+
+    _write_breadcrumb(
+        f"xlsx_load_start file={fname_log} path={filepath} bytes={len(data)}"
+    )
+    _log.debug("xlsx_load_start file=%s bytes=%d", fname_log, len(data))
+    t0 = time.perf_counter()
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    except Exception as exc:
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        _log.exception(
+            "xlsx_load_failed file=%s bytes=%d elapsed_ms=%d error_type=%s",
+            fname_log, len(data), elapsed_ms, type(exc).__name__,
+        )
+        _write_breadcrumb(
+            f"xlsx_load_failed file={fname_log} bytes={len(data)} "
+            f"elapsed_ms={elapsed_ms} error={exc!r}"
+        )
+        return None, str(exc)
+
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    _log.debug(
+        "xlsx_load_done file=%s bytes=%d elapsed_ms=%d sheets=%s",
+        fname_log, len(data), elapsed_ms, wb.sheetnames,
+    )
+    _clear_breadcrumb()
+    return wb, None
+
+
+def _read_one_c6(filepath: str,
+                 fname: str) -> Tuple[Optional[dict], set, List[dict]]:
+    """Lit un fichier C6 Excel. Retourne (records_dict, whitelist, anomalies)."""
+    _log.debug("c6_read_start file=%s path=%s", fname, filepath)
+    anomalies = []
+
+    zip_err = _validate_xlsx_zip(filepath)
+    if zip_err is not None:
         anomalies.append({
             'source': 'C6', 'fichier': fname, 'num': '',
             'type': 'FICHIER_IGNORE',
             'detail': (
-                f"Le fichier C6 '{fname}' a echoue la pre-validation: {zip_err}"
+                f"Le fichier C6 '{fname}' n'a pas pu etre lu comme fichier Excel "
+                f".xlsx ({zip_err})"
             ),
             'action': (
-                f"Ouvrir '{fname}' dans Excel pour verifier qu'il n'est pas "
-                f"corrompu, puis relancer"
+                f"Verifier que '{fname}' n'est pas ouvert dans Excel, pas verrouille "
+                f"par un antivirus, pas un placeholder OneDrive non-telecharge, puis "
+                f"l'enregistrer sous un nouveau .xlsx et relancer"
             ),
         })
         return None, set(), anomalies
 
     try:
-        wb = openpyxl.load_workbook(filepath, data_only=True)
-    except Exception as e:
-        anomalies.append({
-            'source': 'C6', 'fichier': fname, 'num': '',
-            'type': 'FICHIER_IGNORE',
-            'detail': (
-                f"Le fichier C6 '{fname}' n'a pas pu etre lu comme fichier Excel .xlsx "
-                f"({e})"
-            ),
-            'action': (
-                f"Ouvrir '{fname}', verifier qu'il ne s'agit pas d'un fichier corrompu "
-                f"ou d'un faux .xlsx, puis relancer"
-            ),
-        })
-        return None, set(), anomalies
-
-    try:
-        if 'Export 1' not in wb.sheetnames:
+        sheet_names = list_xlsx_sheet_names_stdlib(filepath)
+        if 'Export 1' not in sheet_names:
             anomalies.append({
                 'source': 'C6', 'fichier': fname, 'num': '',
                 'type': 'FEUILLE_EXPORT_1_ABSENTE',
@@ -288,9 +462,15 @@ def _read_one_c6(filepath: str,
             })
             return None, set(), anomalies
 
-        ws = wb['Export 1']
-        whitelist = _read_whitelist(wb)
-        centre_raw = _cell_str(ws, _C6_CENTRE_ROW + 1, _C6_CENTRE_COL + 1)
+        export_rows = read_xlsx_sheet_stdlib(filepath, 'Export 1')
+        whitelist = _read_whitelist_stdlib(filepath)
+        centre_raw = xlsx_cell_1based(
+            export_rows, _C6_CENTRE_ROW + 1, _C6_CENTRE_COL + 1
+        )
+        if centre_raw is not None:
+            centre_raw = str(centre_raw).strip()
+        else:
+            centre_raw = ''
         if not centre_raw:
             anomalies.append({
                 'source': 'C6', 'fichier': fname, 'num': '',
@@ -307,10 +487,10 @@ def _read_one_c6(filepath: str,
             })
 
         records = {}
-        for row in ws.iter_rows(min_row=_C6_DATA_ROW + 1, values_only=True):
-            if not row or row[_C6_COL_NUM] is None:
+        for row in export_rows[_C6_DATA_ROW:]:
+            if not row or _safe_cell(row, _C6_COL_NUM) == '':
                 continue
-            num_raw = str(row[_C6_COL_NUM]).strip()
+            num_raw = _safe_cell(row, _C6_COL_NUM)
             num_key = normalize_appui_num(num_raw)
             if not num_key:
                 continue
@@ -330,8 +510,16 @@ def _read_one_c6(filepath: str,
                 inacc=_safe_cell(row, _C6_COL_INACC),
                 source_file=fname,
             )
+        _log.debug(
+            "c6_read_done file=%s n_records=%d n_whitelist=%d n_anomalies=%d",
+            fname, len(records), len(whitelist), len(anomalies),
+        )
         return records, whitelist, anomalies
     except Exception as e:
+        _log.exception(
+            "c6_read_failed file=%s error_type=%s",
+            fname, type(e).__name__,
+        )
         anomalies.append({
             'source': 'C6', 'fichier': fname, 'num': '',
             'type': 'FICHIER_IGNORE',
@@ -344,8 +532,6 @@ def _read_one_c6(filepath: str,
             ),
         })
         return None, set(), anomalies
-    finally:
-        wb.close()
 
 
 def load_c6_dir(c6_dir: str) -> C6LoadResult:
@@ -436,53 +622,30 @@ def _recalage_to_vertic(recalage_raw: str) -> str:
     return 'Non' if recalage_raw.strip().upper() == 'O' else 'Oui'
 
 
-def _compare_adresse(gespot: GespotRecord,
-                     c6_adresse: str) -> Tuple[str, str]:
-    """Compare l'adresse GESPOT (voie + num_voie) avec l'adresse C6.
-
-    Logique :
-    1. Construire adresse_gespot = num_voie + voie si num_voie valide.
-    2. Match exact (full) -> OK.
-    3. Match voie seule vs C6 -> OK (info: num_voie absent du C6).
-    4. Match voie GESPOT vs C6 sans son numero de tete -> OK.
-    5. Sinon KO.
-    """
-    voie = gespot.voie.strip()
-    num_voie = gespot.num_voie.strip()
-    adr_c6 = c6_adresse.strip()
-
-    has_num = bool(num_voie) and num_voie not in _PLACEHOLDERS_NUM_VOIE
-    adresse_gespot = f"{num_voie} {voie}" if has_num else voie
-
-    ag = adresse_gespot.lower()
-    ac = adr_c6.lower()
-
-    if ag == ac:
+def _compare_type(type_gespot: str, type_c6: str) -> Tuple[str, str]:
+    """Compare le type d'appui en tolerant le suffixe haubanage C6 (ex: S30)."""
+    tg = type_gespot.strip()
+    tc = type_c6.strip()
+    if tg.lower() == tc.lower():
         return 'OK', ''
-    if not ag and not ac:
+    if not tg or not tc:
+        if tg:
+            return 'KO', f"Type GESPOT='{tg}' mais Type C6 est vide"
+        return 'KO', f"Type GESPOT est vide mais Type C6='{tc}'"
+    base_g = _RE_HAUBAN_SUFFIX.sub('', tg)
+    base_c = _RE_HAUBAN_SUFFIX.sub('', tc)
+    if base_g.lower() == base_c.lower():
         return 'OK', ''
-
-    if has_num and voie.lower() == ac:
-        return 'OK', ''
-
-    if not has_num and voie:
-        m = _RE_LEADING_NUM.match(adr_c6)
-        if m and adr_c6[m.end():].strip().lower() == voie.lower():
-            return 'OK', ''
-
-    if adresse_gespot and not adr_c6:
-        return 'KO', f"GESPOT='{adresse_gespot}' mais C6 vide"
-    if not adresse_gespot and adr_c6:
-        return 'KO', f"GESPOT vide mais C6='{adr_c6}'"
-    return 'KO', f"GESPOT='{adresse_gespot}' vs C6='{adr_c6}'"
+    return 'KO', f"Type GESPOT='{tg}' vs Type C6='{tc}'"
 
 
 def _compare_one(gespot: GespotRecord, c6: C6Record) -> ComparisonResult:
     vertic_gespot = _recalage_to_vertic(gespot.recalage_raw)
 
-    s_adr, d_adr = _compare_adresse(gespot, c6.adresse)
-    s_ctr, d_ctr = _cmp(gespot.centre, c6.centre, 'Centre GESPOT', 'Centre C6')
-    s_typ, d_typ = _cmp(gespot.type_calc, c6.type_c6, 'Type GESPOT', 'Type C6')
+    # Controles adresse et centre annules (statut force OK, detail vide)
+    s_adr, d_adr = 'OK', ''
+    s_ctr, d_ctr = 'OK', ''
+    s_typ, d_typ = _compare_type(gespot.type_calc, c6.type_c6)
     s_str, d_str = _cmp(gespot.strategie_calc, c6.strat, 'Strategie GESPOT', 'Strategie C6')
     s_env, d_env = _cmp(gespot.milieu_calc, c6.env, 'Milieu GESPOT', 'Milieu C6')
     s_elc, d_elc = _cmp(gespot.pres_elect_calc, c6.elec, 'Risque elec GESPOT', 'Risque elec C6')
@@ -833,15 +996,22 @@ def _write_analyse(wb: openpyxl.Workbook,
 def run_comparison(gespot_dir: str, c6_dir: str,
                    export_dir: str,
                    progress_cb=None,
-                   etude_map=None) -> GespotC6Result:
+                   etude_map=None,
+                   gespot_rows=None,
+                   gespot_source_label: str = '') -> GespotC6Result:
     """Orchestre lecture -> comparaison -> export.
 
     Args:
-        gespot_dir: Chemin du dossier GESPOT/GSPOT.
+        gespot_dir: Chemin du dossier GESPOT/GSPOT (utilise seulement si
+                    gespot_rows est None).
         c6_dir:     Chemin du dossier C6 (= CAP FT).
         export_dir: Dossier de sortie.
         progress_cb: callable(pct, msg) optionnel.
         etude_map:  {normalized_inf_num: etude_name ou 'HORS ETUDE'} optionnel.
+        gespot_rows: list[dict] de dicts bruts extraits de la couche QGIS.
+                     Si fourni, les regles metier BR-01 a BR-06 sont appliquees
+                     ici avec la whitelist C6 (qui vient d'etre lue).
+        gespot_source_label: Label source (ex: 'data_gespot') pour les anomalies.
 
     Returns:
         GespotC6Result avec output_path renseigne.
@@ -853,9 +1023,18 @@ def run_comparison(gespot_dir: str, c6_dir: str,
     _prog(5, 'Lecture C6...')
     c6_result = load_c6_dir(c6_dir)
 
-    _prog(30, 'Lecture GESPOT...')
-    from .gespot_reader import load_gespot_dir
-    gespot_result = load_gespot_dir(gespot_dir, whitelist=c6_result.whitelist)
+    if gespot_rows is not None:
+        _prog(30, 'Traitement GESPOT (couche/BDD)...')
+        from .gespot_reader import load_gespot_from_rows
+        gespot_result = load_gespot_from_rows(
+            gespot_rows,
+            source_label=gespot_source_label or 'data_gespot',
+            whitelist=c6_result.whitelist,
+        )
+    else:
+        _prog(30, 'Lecture GESPOT (CSV)...')
+        from .gespot_reader import load_gespot_dir
+        gespot_result = load_gespot_dir(gespot_dir, whitelist=c6_result.whitelist)
 
     _prog(60, 'Comparaison...')
     result = compare(gespot_result, c6_result, etude_map=etude_map)
@@ -866,7 +1045,7 @@ def run_comparison(gespot_dir: str, c6_dir: str,
 
     _append_global_diagnostics(result, gespot_result, c6_result)
 
-    _prog(85, 'Export Excel...')
+    _prog(90, 'Export Excel...')
     export_to_excel(result, export_dir)
 
     _prog(100, 'Termine.')

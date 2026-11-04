@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 Batch Runner - DAG-aware multi-module execution controller.
 
@@ -10,15 +18,19 @@ will be made truly intra-group parallel.
 Public API identical to the original sequential runner (same signals).
 """
 
+import logging
 from qgis.PyQt.QtCore import QObject, pyqtSignal, QTimer
 
+from .version import get_version
 
-# Module registry: key -> display name
+logger = logging.getLogger(__name__)
+
+
+# Module registry: key -> display name (module 'maj' supprime : BDD retiree)
 MODULE_REGISTRY = {
-    'maj':       '0. MAJ BD',
     'capft':     '1. VERIF CAP_FT',
     'comac':     '2. VERIF COMAC',
-    'c6bd':      '3. C6 vs BD',
+    'c6bd':      '3. C6 vs Donnees Projet',
     'police_c6': '4. POLICE C6',
     'c6c3a':     '5. C6-C3A-C7-BD',
     'gespot_c6': '6. GESPOT vs C6',
@@ -31,13 +43,13 @@ MODULE_REGISTRY = {
 #               modules only (not selected = auto-satisfied)
 # - background: True = launched immediately, runs in parallel with ALL groups
 MODULE_DAG = {
-    'maj':       {'depends_on': [],      'group': 0, 'background': False},
-    'capft':     {'depends_on': ['maj'], 'group': 1, 'background': False},
-    'c6bd':      {'depends_on': ['maj'], 'group': 1, 'background': False},
-    'c6c3a':     {'depends_on': ['maj'], 'group': 1, 'background': False},
-    'comac':     {'depends_on': ['maj'], 'group': 2, 'background': False},
-    'police_c6': {'depends_on': ['maj'], 'group': 2, 'background': False},
-    'gespot_c6': {'depends_on': [],      'group': 3, 'background': False},
+    # Un module par groupe : pas de QgsTask Excel/openpyxl en parallele (Windows QGIS 3.40+).
+    'capft':     {'depends_on': [],      'group': 1, 'background': False},
+    'c6bd':      {'depends_on': [],      'group': 2, 'background': False},
+    'c6c3a':     {'depends_on': [],      'group': 3, 'background': False},
+    'comac':     {'depends_on': [],      'group': 4, 'background': False},
+    'police_c6': {'depends_on': [],      'group': 5, 'background': False},
+    'gespot_c6': {'depends_on': [],      'group': 6, 'background': False},
 }
 # Note: comac and police_c6 in same group (2) because fddcpi2 is pre-fetched
 # by BatchDataExtractor._pre_extract_cables() before runner.start().
@@ -134,6 +146,12 @@ class BatchRunner(QObject):
         names = ', '.join(MODULE_REGISTRY.get(k, k) for k in valid_keys)
         self.log_message.emit(
             f"Lancement de {self._total_modules} module(s) : {names}", 'info'
+        )
+        logger.info(
+            "batch_start module_count=%d modules=%s plugin_version=%s",
+            self._total_modules,
+            ','.join(valid_keys),
+            get_version()
         )
         self.batch_progress.emit(0)
 

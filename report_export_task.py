@@ -1,6 +1,15 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 from .async_tasks import AsyncTaskBase
 from .unified_report import generate_unified_report
+from .version import get_version
 
 
 class UnifiedReportExportTask(AsyncTaskBase):
@@ -11,8 +20,14 @@ class UnifiedReportExportTask(AsyncTaskBase):
         if self.isCanceled():
             return False
 
+        # Inject plugin version into batch_results for unified report
+        batch_results = self.params.get('batch_results') or {}
+        if 'metadata' not in batch_results:
+            batch_results['metadata'] = {}
+        batch_results['metadata']['plugin_version'] = get_version()
+
         filepath = generate_unified_report(
-            self.params.get('batch_results') or {},
+            batch_results,
             self.params.get('export_dir', ''),
             {
                 'include_comac_drawings': bool(self.params.get('include_comac_drawings')),

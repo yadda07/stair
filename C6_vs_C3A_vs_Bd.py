@@ -1,5 +1,13 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 
 from qgis.core import QgsFeatureRequest, QgsExpression, QgsSpatialIndex, NULL, QgsMessageLog, Qgis
 from .compat import MSG_WARNING, MSG_CRITICAL
@@ -7,6 +15,9 @@ import os
 import re
 import numpy as np
 import pandas as pd
+from .lib_compat import ensure_openpyxl_safe_backend, read_excel_sheet
+
+ensure_openpyxl_safe_backend()
 from openpyxl.styles import PatternFill
 from .qgis_utils import get_layer_safe, validate_same_crs
 from .core_utils import normalize_appui_num
@@ -25,9 +36,7 @@ class C6_vs_C3A_vs_Bd:
         df_rempl = None
         name = os.path.basename(fichier_c6)
         try:
-            with pd.ExcelFile(fichier_c6) as xls:
-                # On prend les données à partir de la ligne 7 (la colonne).
-                df1 = pd.read_excel(xls, "Export 1", header=7, index_col=None)  # , index_col=0,  skiprows=[15], na_values=["NA"],)
+            df1 = read_excel_sheet(fichier_c6, "Export 1", header=7)
             # print(f"fichier_c6 {fichier_c6}")
 
             # Creation d'un Dataframe à partir des données collectées dans Excel
@@ -76,9 +85,9 @@ class C6_vs_C3A_vs_Bd:
 
         name = os.path.basename(fichier_c3a)
         try:
-            with pd.ExcelFile(fichier_c3a) as xls:
-                # On prend les données à partir de la ligne 7 (la colonne).
-                df1 = pd.read_excel(xls, "Commandes Fermes", header=13, index_col=None, names=names)
+            df1 = read_excel_sheet(
+                fichier_c3a, "Commandes Fermes", header=13, names=names
+            )
 
             # On donne la liste des colonnes que l'on souhaite garder
             resultat = df1.loc[:, ["type_a", "num_a", "type_b", "num_b", "comment_oper", "remp_perc_a", "remp_perc_b"]]
@@ -155,17 +164,20 @@ class C6_vs_C3A_vs_Bd:
         listeEtat = []
         listeEtat_rempl = []
 
-        requete = QgsExpression("inf_type LIKE 'POT-FT'")
-        request = QgsFeatureRequest(requete)
-        clause = QgsFeatureRequest.OrderByClause('inf_type', ascending=True)
-        orderby = QgsFeatureRequest.OrderBy([clause])
-        request.setOrderBy(orderby)
+        idx_inf_num = infra_pt_pot.fields().indexFromName('inf_num')
+        idx_etat = infra_pt_pot.fields().indexFromName('etat')
+        pot_attrs = [i for i in (idx_inf_num, idx_etat) if i >= 0]
+
+        request = QgsFeatureRequest().setFilterExpression("inf_type = 'POT-FT'")
+        if pot_attrs:
+            request.setSubsetOfAttributes(pot_attrs)
 
         # SEC-02: Echapper les quotes pour éviter injection
         valeur_safe = str(valeur_chp_dcp).replace("'", "''")
         champs_safe = str(champs_dcp).replace('"', '')
         requete = QgsExpression(f'"{champs_safe}" LIKE \'{valeur_safe}\'')
         request_cap_ft = QgsFeatureRequest(requete)
+        request_cap_ft.setSubsetOfAttributes([])
         clause_cap_ft = QgsFeatureRequest.OrderByClause(champs_dcp, ascending=True)
         orderby_cap_ft = QgsFeatureRequest.OrderBy([clause_cap_ft])
         request_cap_ft.setOrderBy(orderby_cap_ft)
@@ -373,9 +385,7 @@ class C6_vs_C3A_vs_Bd:
 
         name = os.path.basename(fichier_c7)
         try:
-            with pd.ExcelFile(fichier_c7) as xls:
-                # On prend les données à partir de la ligne 7 (la colonne).
-                df1 = pd.read_excel(xls, "Commande", header=16, index_col=None, names=names)
+            df1 = read_excel_sheet(fichier_c7, "Commande", header=16, names=names)
 
             # print(df1.columns)
             # On donne la liste des colonnes que l'on souhaite garder

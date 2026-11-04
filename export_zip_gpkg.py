@@ -1,3 +1,11 @@
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """Extract ST-AIR test data from PostGIS -> GeoPackage -> ZIP.
 
 Usage :
@@ -30,6 +38,7 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
 import zipfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -39,6 +48,7 @@ from qgis.core import (
     QgsDataSourceUri,
     QgsProject,
     QgsProviderRegistry,
+    QgsSettings,
     QgsTask,
     QgsVectorFileWriter,
     QgsVectorLayer,
@@ -61,7 +71,8 @@ _ENV_PG_DB = os.environ.get("RL_PG_DB", "")
 _ENV_PG_USER = os.environ.get("RL_PG_USER", "")
 _ENV_PG_PWD = os.environ.get("RL_PG_PWD", "")
 
-SCHEMA = os.environ.get("RL_SCHEMA", "")
+SCHEMA = os.environ.get("RL_SCHEMA", "rip_avg_nge")
+GESPOT_SCHEMA = os.environ.get("RL_GESPOT_SCHEMA", "gespot")
 SRO_FIELD = os.environ.get("RL_SRO_FIELD", "sro")
 SRO_CODE = os.environ.get("RL_SRO_CODE", "")
 
@@ -130,6 +141,9 @@ def _sro_clause(sro_code: str, field: str = SRO_FIELD) -> str:
 # Nommage au SINGULIER pour les tables etude_* : le plugin ST-AIR
 # (dialog_v2.bind_gpkg_layers, gpkg_pipeline.load_caches_from_gpkg) attend
 # exactement `etude_cap_ft` et `etude_comac` pour l'auto-binding des combos.
+#
+# data_gespot : pas de colonne sro dans la table gespot.data_gespot.
+#   Filtre spatial par intersection avec le polygone za_sro correspondant.
 TABLE_FILTERS: Dict[str, Callable[[str], str]] = {
     "cables": lambda sro: _sro_clause(sro),
     "infra_pt_pot": lambda sro: (
@@ -141,7 +155,18 @@ TABLE_FILTERS: Dict[str, Callable[[str], str]] = {
     "etude_comac": lambda sro: _sro_clause(sro),
     "bpe": lambda sro: _sro_clause(sro),
     "attaches": lambda sro: _sro_clause(sro),
+    "data_gespot": lambda sro: (
+        f"ST_Intersects(\"geom\", "
+        f"(SELECT \"geom\" FROM \"{_sanitize_ident(SCHEMA)}\".\"za_sro\" "
+        f"WHERE {_sro_clause(sro)}))"
+    ),
 }
+
+# Schema par table : la plupart sont dans SCHEMA (rip_avg_nge),
+# sauf data_gespot qui est dans GESPOT_SCHEMA (gespot).
+TABLE_SCHEMAS: Dict[str, str] = {}
+for _t in TABLE_FILTERS:
+    TABLE_SCHEMAS[_t] = GESPOT_SCHEMA if _t == "data_gespot" else SCHEMA
 
 TABLES: List[str] = list(TABLE_FILTERS.keys())
 
@@ -314,9 +339,185 @@ def _export_to_gpkg(layer: QgsVectorLayer, gpkg_path: Path, append: bool, ctx) -
         )
 
 
+def _export_fddcpiax_to_gpkg(conn, sro_slash: str, gpkg_path: Path, pg_params: dict, ctx) -> int:
+    """Appelle fddcpiax(sro) via executeSql (read-write) et ecrit le resultat
+    dans le GPKG comme couche cables_decoupes.
+
+    fddcpiax utilise DROP TABLE / CREATE TEMP TABLE en interne, ce qui
+    requiert une transaction read-write. QgsVectorLayer ouvre un curseur
+    read-only : on passe donc par conn.executeSql().
+
+    Retourne le nombre de segments ecrits, 0 si echec.
+    """
+    from qgis.core import QgsFeature, QgsField, QgsGeometry
+    from .compat import (
+        FIELD_TYPE_STRING as _T_STR,
+        FIELD_TYPE_INT as _T_INT,
+        FIELD_TYPE_DOUBLE as _T_DBL,
+        FIELD_TYPE_LONGLONG as _T_LL,
+    )
+
+    sch = _sanitize_ident(SCHEMA)
+    sro_escaped = sro_slash.replace("'", "''")
+    sql = (
+        f'SELECT gid_dc2, gid_dc, gid, sro, nro, length, '
+        f'cab_type, cab_capa, cab_modulo, cb_etiquet, posemode, '
+        f'ST_AsText(geom) AS geom_wkt '
+        f'FROM "{sch}".fddcpiax(\'{sro_escaped}\')'
+    )
+    _log(f"  fddcpiax: appel SQL pour SRO={sro_slash}")
+    try:
+        rows = conn.executeSql(sql)
+        if not rows:
+            _log("  fddcpiax: 0 segments")
+            return 0
+
+        layer = QgsVectorLayer(
+            "LineString?crs=EPSG:2154", "cables_decoupes", "memory",
+        )
+        pr = layer.dataProvider()
+        pr.addAttributes([
+            QgsField("gid_dc2", _T_LL),
+            QgsField("gid_dc", _T_LL),
+            QgsField("gid", _T_INT),
+            QgsField("sro", _T_STR),
+            QgsField("nro", _T_STR),
+            QgsField("length", _T_DBL),
+            QgsField("cab_type", _T_STR),
+            QgsField("cab_capa", _T_INT),
+            QgsField("cab_modulo", _T_INT),
+            QgsField("cb_etiquet", _T_STR),
+            QgsField("posemode", _T_INT),
+        ])
+        layer.updateFields()
+
+        features = []
+        for row in rows:
+            wkt = str(row[11] or '')
+            if not wkt:
+                continue
+            geom = QgsGeometry.fromWkt(wkt)
+            if geom.isNull() or geom.isEmpty():
+                continue
+            feat = QgsFeature(layer.fields())
+            feat.setGeometry(geom)
+            feat.setAttribute("gid_dc2", int(row[0] or 0))
+            feat.setAttribute("gid_dc", int(row[1] or 0))
+            feat.setAttribute("gid", int(row[2] or 0))
+            feat.setAttribute("sro", str(row[3] or ''))
+            feat.setAttribute("nro", str(row[4] or ''))
+            feat.setAttribute("length", float(row[5] or 0))
+            feat.setAttribute("cab_type", str(row[6] or ''))
+            feat.setAttribute("cab_capa", int(row[7] or 0))
+            feat.setAttribute("cab_modulo", int(row[8] or 0))
+            feat.setAttribute("cb_etiquet", str(row[9] or ''))
+            feat.setAttribute("posemode", int(row[10] or 0))
+            features.append(feat)
+
+        if not features:
+            _log("  fddcpiax: 0 geometries valides")
+            return 0
+
+        pr.addFeatures(features)
+        layer.updateExtents()
+        nb = len(features)
+        _log(f"  fddcpiax: {nb} segments decoupes")
+
+        append = gpkg_path.exists()
+        _export_to_gpkg(layer, gpkg_path, append, ctx)
+        return nb
+    except Exception as exc:
+        _log(f"  fddcpiax: echec: {exc}")
+        return 0
+
+
 def _zip_file(src: Path, dst: Path) -> None:
     with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.write(src, arcname=src.name)
+
+
+# ---------------------------------------------------------------------------
+# Styles: lecture QML locaux -> ecriture GPKG layer_styles
+# ---------------------------------------------------------------------------
+_STYLES_DIR = Path(__file__).parent / "styles"
+
+_STYLE_MAP: Dict[str, str] = {
+    "cables": "cables.qml",
+    "infra_pt_pot": "infra_pt_pot.qml",
+    "etude_cap_ft": "etudes_cap_ft.qml",
+    "etude_comac": "etudes_comac.qml",
+    "bpe": "bpe.qml",
+    "attaches": "attaches.qml",
+    "data_gespot": "data_gespot.qml",
+    "cables_decoupes": "cables_dc.qml",
+}
+
+
+def _load_local_styles(tables: List[str]) -> Dict[str, str]:
+    """Lit les fichiers QML locaux depuis styles/ pour chaque table exportee.
+
+    Retourne {table_name: qml_content}.
+    """
+    styles: Dict[str, str] = {}
+    for tname in tables:
+        qml_file = _STYLE_MAP.get(tname)
+        if not qml_file:
+            continue
+        qml_path = _STYLES_DIR / qml_file
+        if not qml_path.exists():
+            _log(f"  styles: {tname} -> {qml_file} introuvable")
+            continue
+        try:
+            qml = qml_path.read_text(encoding="utf-8")
+            if qml.strip():
+                styles[tname] = qml
+        except Exception as exc:
+            _log(f"  styles: {tname} -> lecture echouee: {exc}")
+    return styles
+
+
+def _write_styles_to_gpkg(gpkg_path: Path, styles: Dict[str, str]) -> int:
+    """Ecrit les styles QML dans la table layer_styles du GPKG (SQLite).
+
+    Retourne le nombre de styles ecrits.
+    """
+    if not styles or not gpkg_path.exists():
+        return 0
+    db = sqlite3.connect(str(gpkg_path))
+    try:
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS layer_styles ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  f_table_catalog TEXT DEFAULT '',"
+            "  f_table_schema TEXT DEFAULT '',"
+            "  f_table_name TEXT NOT NULL,"
+            "  f_geometry_column TEXT DEFAULT '',"
+            "  styleName TEXT DEFAULT 'default',"
+            "  styleQML TEXT,"
+            "  styleSLD TEXT DEFAULT '',"
+            "  useAsDefault BOOLEAN DEFAULT 1,"
+            "  description TEXT DEFAULT '',"
+            "  owner TEXT DEFAULT '',"
+            "  ui TEXT DEFAULT '',"
+            "  update_time TIMESTAMP DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+            ")"
+        )
+        nb = 0
+        for table_name, qml in styles.items():
+            db.execute(
+                "INSERT INTO layer_styles "
+                "(f_table_name, f_geometry_column, styleName, styleQML, useAsDefault) "
+                "VALUES (?, 'geom', 'default', ?, 1)",
+                (table_name, qml),
+            )
+            nb += 1
+        db.commit()
+        return nb
+    except Exception as exc:
+        _log(f"  styles: ecriture GPKG echouee: {exc}")
+        return 0
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +533,7 @@ class ExtractTask(QgsTask):
         gpkg_path: Path,
         zip_path: Path,
         ctx,
+        load_after_export: bool = False,
     ) -> None:
         super().__init__("ST-AIR: extract test data", QgsTask.CanCancel)
         self._sro = sro_slash
@@ -339,6 +541,7 @@ class ExtractTask(QgsTask):
         self._gpkg_path = gpkg_path
         self._zip_path = zip_path
         self._ctx = ctx
+        self._load_after = load_after_export
         self.exported: List[Tuple[str, int]] = []  # (table, feature_count)
         self.failed: List[Tuple[str, str]] = []
         self._fatal: Optional[str] = None
@@ -356,19 +559,20 @@ class ExtractTask(QgsTask):
             if self.isCanceled():
                 return False
             self.setProgress(100.0 * i / total)
-            full = f"{SCHEMA}.{table}"
+            schema = TABLE_SCHEMAS.get(table, SCHEMA)
+            full = f"{schema}.{table}"
             try:
                 where_sql = TABLE_FILTERS[table](self._sro)
                 _log(f"[{i + 1}/{total}] {full}")
                 _log(f"    WHERE {where_sql}")
-                geom_info = _discover_geometry(conn, SCHEMA, table)
+                geom_info = _discover_geometry(conn, schema, table)
                 if geom_info is None:
                     raise RuntimeError(
                         "not registered in geometry_columns (non-spatial or missing)"
                     )
                 geom_col, srid = geom_info
                 layer = _load_layer(
-                    SCHEMA, table, geom_col, srid, where_sql, self._pg_params,
+                    schema, table, geom_col, srid, where_sql, self._pg_params,
                 )
                 nb = layer.featureCount()
                 _log(
@@ -380,6 +584,21 @@ class ExtractTask(QgsTask):
             except Exception as exc:
                 _log(f"    FAILED: {exc}")
                 self.failed.append((full, str(exc)))
+
+        # cables_decoupes via fddcpiax(sro)
+        if self.exported and self._gpkg_path.exists():
+            nb_dc = _export_fddcpiax_to_gpkg(
+                conn, self._sro, self._gpkg_path, self._pg_params, self._ctx,
+            )
+            if nb_dc > 0:
+                self.exported.append(("cables_decoupes", nb_dc))
+
+        if self.exported and self._gpkg_path.exists():
+            exported_tables = [t for t, _ in self.exported]
+            styles = _load_local_styles(exported_tables)
+            if styles:
+                nb_styles = _write_styles_to_gpkg(self._gpkg_path, styles)
+                _log(f"  styles: {nb_styles}/{len(exported_tables)} embarque(s)")
 
         self.setProgress(100.0)
         return True
@@ -422,14 +641,49 @@ class ExtractTask(QgsTask):
             _log(f"  {self._sro}: zip failed: {exc}")
             return
 
-        _safe_unlink(self._gpkg_path)
-
         tables_ok = len(self.exported)
         tables_ko = len(self.failed)
         _log(f"  {self._sro}: OK ({tables_ok} tables, {nb_cables} cables) -> {self._zip_path.name}")
         if tables_ko:
             for name, err in self.failed:
                 _log(f"    FAILED: {name}: {err}")
+
+        if self._load_after:
+            self._load_into_qgis()
+        else:
+            _safe_unlink(self._gpkg_path)
+
+    def _load_into_qgis(self) -> None:
+        """Charge les couches du GPKG exporte dans le projet QGIS courant."""
+        if not self._gpkg_path.exists():
+            return
+        try:
+            from .gpkg_pipeline.zip_loader import load_gpkg_layers_into_qgis
+            sro_label = self._sro.replace("/", "-")
+            nb = load_gpkg_layers_into_qgis(
+                str(self._gpkg_path), group_name=sro_label,
+            )
+            self._apply_styles_to_loaded_layers()
+            _log(f"  {self._sro}: {nb} couche(s) chargee(s) dans QGIS")
+        except Exception as exc:
+            _log(f"  {self._sro}: chargement QGIS echoue: {exc}")
+
+    def _apply_styles_to_loaded_layers(self) -> None:
+        """Applique les QML locaux aux couches chargees depuis le GPKG."""
+        from qgis.core import QgsProject
+        gpkg_str = str(self._gpkg_path)
+        for layer in QgsProject.instance().mapLayers().values():
+            src = layer.source()
+            if gpkg_str not in src:
+                continue
+            layer_name = src.split("layername=")[-1].split("|")[0] if "layername=" in src else ""
+            qml_file = _STYLE_MAP.get(layer_name)
+            if not qml_file:
+                continue
+            qml_path = _STYLES_DIR / qml_file
+            if qml_path.exists():
+                layer.loadNamedStyle(str(qml_path))
+                layer.triggerRepaint()
 
 
 def _safe_unlink(path: Path) -> None:
@@ -512,6 +766,12 @@ class ExportBatchDialog(QDialog):
         dir_row.addWidget(self._dir_btn)
         root.addLayout(dir_row)
 
+        self._chk_load = QCheckBox('Charger dans QGIS')
+        self._chk_load.setChecked(
+            QgsSettings().value('stair/export_gpkg/load_after_export', True, bool)
+        )
+        root.addWidget(self._chk_load)
+
         self._btn_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
@@ -563,6 +823,9 @@ class ExportBatchDialog(QDialog):
             if item.checkState() == Qt.CheckState.Checked:
                 self._result_sros.append(item.text())
         self._result_dir = self._dir_edit.text()
+        QgsSettings().setValue(
+            'stair/export_gpkg/load_after_export', self._chk_load.isChecked()
+        )
         self.accept()
 
     def selected_sros(self):
@@ -570,6 +833,9 @@ class ExportBatchDialog(QDialog):
 
     def export_dir(self):
         return self._result_dir
+
+    def load_after_export(self):
+        return self._chk_load.isChecked()
 
 
 # ---------------------------------------------------------------------------
@@ -594,6 +860,7 @@ def run() -> None:
 
     selected = dlg.selected_sros()
     out_dir = Path(dlg.export_dir())
+    load_after = dlg.load_after_export()
     if not selected:
         _log("Aucun SRO selectionne.")
         return
@@ -624,7 +891,10 @@ def run() -> None:
         gpkg_path = out_dir / f"{sro_dash}.gpkg"
         zip_path = out_dir / f"{sro_dash}.zip"
         _clean_previous(gpkg_path, zip_path)
-        task = ExtractTask(sro_slash, pg_params, gpkg_path, zip_path, ctx)
+        task = ExtractTask(
+            sro_slash, pg_params, gpkg_path, zip_path, ctx,
+            load_after_export=load_after,
+        )
         tasks.append(task)
         tm.addTask(task)
         _log(f"  -> {sro_slash}")

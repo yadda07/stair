@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 
 """
 
@@ -29,6 +37,7 @@ from qgis.PyQt.QtCore import QObject, pyqtSignal, QTimer
 from qgis.core import QgsTask, QgsApplication, QgsMessageLog, Qgis
 from .compat import MSG_INFO, MSG_WARNING, MSG_CRITICAL
 from .core_utils import normalize_appui_num
+from .lib_compat import ensure_openpyxl_safe_backend
 
 import traceback
 
@@ -443,6 +452,8 @@ class AsyncTaskBase(QgsTask):
 
         """Execute in background thread"""
 
+        ensure_openpyxl_safe_backend()
+
         try:
 
             return self.execute()
@@ -814,7 +825,7 @@ class ComacTask(AsyncTaskBase):
 
     ARCH-FIX: Reçoit données pré-extraites du main thread.
 
-    Ne fait que traitement pur (comparaison, lecture Excel).
+    Lecture Excel COMAC via stdlib (zip+xml.etree), pas openpyxl en worker.
 
     """
 
@@ -904,27 +915,25 @@ class ComacTask(AsyncTaskBase):
 
         self.emit_progress(40)
 
-        self.emit_message("Lecture fichiers Excel...", "grey")
-
-        
-
-        # Lecture Excel - thread-safe (pas d'appel QGIS)
+        self.emit_message("Fusion donnees COMAC...", "grey")
 
         from .Comac import Comac
-
         from .perf_logger import PerfLogger as _PerfLogger
 
         com = Comac()
-
         _t_excel_comac = _time.perf_counter()
+        comac_excel = self.qgis_data.get('comac_excel')
+        if comac_excel is None:
+            self.emit_message("Lecture fichiers Excel COMAC...", "grey")
+            zone = self.params.get('zone_climatique', 'ZVN')
+            comac_excel = com.LectureFichiersExcelsComac(
+                self.params['chemin_comac'], zone
+            )
 
-        doublons, erreurs_lecture, dico_excel, dico_verif_secu, dico_cables_comac, dico_boitier_comac, dico_coords, dico_etude_par_appui = com.LectureFichiersExcelsComac(
-
-            self.params['chemin_comac'],
-
-            self.params.get('zone_climatique', 'ZVN')
-
-        )
+        (
+            doublons, erreurs_lecture, dico_excel, dico_verif_secu,
+            dico_cables_comac, dico_boitier_comac, dico_coords, dico_etude_par_appui,
+        ) = comac_excel
 
         
 
@@ -1047,8 +1056,6 @@ class ComacTask(AsyncTaskBase):
 
             try:
 
-                from .db_connection import DatabaseConnection, get_shared_connection
-
                 from .cable_analyzer import compter_cables_par_appui, verifier_boitiers
 
                 
@@ -1095,54 +1102,22 @@ class ComacTask(AsyncTaskBase):
                 )
                 reverse_map = {v: k for k, v in name_map.items()}
 
-                # === Routage NGE / Axione ===
-                be_type = self.params.get('be_type', 'nge')
-                gracethd_dir = self.params.get('gracethd_dir', '')
+                # === Cables: lecture depuis cache pre-peuple (ex-fddcpi2, desormais GPKG) ===
+                src_label = 'GPKG'
+                cables_all = self.params.get('fddcpi_cables_cache')
+                bpe_list = self.params.get('bpe_cache') or []
 
-                if be_type == 'axione' and gracethd_dir:
-                    # Axione: charger cables depuis GraceTHD
-                    from .gracethd_reader import GraceTHDReader
-                    self.emit_message(f"Vérif câbles: GraceTHD ({gracethd_dir})...", "grey")
-                    reader = GraceTHDReader(gracethd_dir)
-                    cables_all = reader.load_cables_as_segments('DI')
-                    bpe_list = reader.load_bpe()
+                if cables_all is not None:
+                    self.emit_message(
+                        f"Verif cables: cache ({len(cables_all)} segments)",
+                        "grey"
+                    )
                 else:
-                    # NGE: pipeline fddcpi2 standard
-                    cables_all = self.params.get('fddcpi_cables_cache')
-
-                    if cables_all is not None:
-
-                        self.emit_message(
-
-                            f"Vérif câbles: fddcpi2({sro}) depuis cache ({len(cables_all)} segments)",
-
-                            "grey"
-
-                        )
-
-                    else:
-
-                        self.emit_message(f"Vérif câbles: connexion PostgreSQL fddcpi2({sro})...", "grey")
-
-                        db = DatabaseConnection()
-
-                        if db.connect():
-
-                            _t_fddcpi = _time.perf_counter()
-
-                            cables_all = db.execute_fddcpi2(sro)
-
-                            _PerfLogger.record('comac', 'fddcpi2_query',
-
-                                               (_time.perf_counter() - _t_fddcpi) * 1000,
-
-                                               sro=sro, feature_count=len(cables_all) if cables_all else 0)
-
-                        else:
-
-                            cables_all = None
-
-                            self.emit_message("Vérif câbles: connexion PostgreSQL impossible", "orange")
+                    self.emit_message(
+                        "Verif cables: aucun cache de cables disponible "
+                        "(BDD supprimee, alimenter via GeoPackage)",
+                        "orange"
+                    )
 
                 
 
@@ -1189,18 +1164,18 @@ class ComacTask(AsyncTaskBase):
 
                     
 
-                    # Compter câbles par appui (group_by_gid=True: câbles physiques, pas segments découpés)
-                    cable_match = 'line' if (be_type == 'axione' and gracethd_dir) else 'endpoint'
-                    # GraceTHD: tolerance large (cable = route complete). Endpoint: 1.5m (cables parfois decales de l'appui)
-                    cable_tol = 2.0 if cable_match == 'line' else 1.5
+                    # Compter cables par appui (group_by_gid=True: cables physiques, pas segments decoupes)
+                    # Matching endpoint avec tolerance 1.5m (cables parfois decales de l'appui)
+                    cables_par_appui = compter_cables_par_appui(
+                        cables, appuis_data,
+                        tolerance=1.5,
+                        group_by_gid=True,
+                        cab_types={'CDI'},
+                    )
 
-                    cables_par_appui = compter_cables_par_appui(cables, appuis_data, tolerance=cable_tol, group_by_gid=True, match_mode=cable_match, cab_types={'CDI'})
-
-                    # Diagnostic: combien d'appuis ont des cables matches
                     nb_with_cables = sum(1 for v in cables_par_appui.values() if v.get('count', 0) > 0)
-                    src_label = "GraceTHD" if (be_type == 'axione' and gracethd_dir) else "BDD"
                     self.emit_message(
-                        f"  {nb_with_cables}/{len(cables_par_appui)} appuis QGIS avec câbles {src_label} (mode={cable_match})",
+                        f"  {nb_with_cables}/{len(cables_par_appui)} appuis QGIS avec cables GPKG",
                         "blue"
                     )
 
@@ -1345,22 +1320,9 @@ class ComacTask(AsyncTaskBase):
 
                     
 
-                    # Récupérer BPE du SRO
-                    if be_type == 'axione' and gracethd_dir:
-                        # BPE deja charges depuis GraceTHD (plus haut)
-                        pass
-                    else:
-                        db_bpe = get_shared_connection()
-
-                        if db_bpe.connect():
-
-                            bpe_list = db_bpe.query_bpe_by_sro(sro)
-
-                        else:
-
-                            bpe_list = []
-
-                            self.emit_message("  BPE: connexion PostgreSQL impossible", "orange")
+                    # BPE: deja peuples depuis le cache en amont (params['bpe_cache'])
+                    if not bpe_list:
+                        self.emit_message("  BPE: aucun cache disponible, verif boitiers ignoree", "orange")
 
                     
 
@@ -1567,13 +1529,13 @@ class ComacTask(AsyncTaskBase):
             except Exception as e_pcm_read:
                 self.emit_message(f"Lecture PCM: erreur {e_pcm_read}", "orange")
 
-        # === Verification portees PCM vs BDD/GraceTHD ===
+        # === Verification portees PCM vs reference (cache cables GPKG) ===
         verif_portees = []
 
         if etudes_pcm and sro:
             try:
                 from .pcm_parser import extraire_portees_par_cable
-                from .cable_analyzer import reconstituer_portees_bdd, extraire_portees_gracethd, comparer_portees
+                from .cable_analyzer import reconstituer_portees_bdd, comparer_portees
 
                 self.emit_progress(91)
                 self.emit_message("Verif portees: preparation des troncons PCM...", "grey")
@@ -1587,39 +1549,22 @@ class ComacTask(AsyncTaskBase):
                             "blue"
                         )
 
-                        # Deserialiser appuis si pas deja fait (has_verif_work=False)
                         if not appuis_data:
                             appuis_data = _deserialize_appuis_wkb(self.qgis_data.get('appuis', []))
 
                         self.emit_progress(93)
                         self.emit_message("Verif portees: reconstruction troncons reference...", "grey")
 
-                        be_type = self.params.get('be_type', 'nge')
-                        gracethd_dir = self.params.get('gracethd_dir', '')
-
                         troncons_ref = []
-                        if be_type == 'axione' and gracethd_dir:
-                            from .gracethd_reader import GraceTHDReader
-                            reader_p = GraceTHDReader(gracethd_dir)
-                            cables_nodes = reader_p.load_cables_with_nodes('DI')
-                            troncons_ref = extraire_portees_gracethd(
-                                cables_nodes, appuis_data, tolerance=2.0
-                            )
-                        elif cables_all_for_cache is not None:
+                        if cables_all_for_cache is not None:
                             troncons_ref = reconstituer_portees_bdd(
                                 cables_all_for_cache, appuis_data, tolerance=0.5
                             )
                         else:
-                            from .db_connection import get_shared_connection as _get_conn_p
-                            self.emit_message("Verif portees: chargement cables fddcpi2...", "grey")
-                            db_p = _get_conn_p()
-                            if db_p.connect():
-                                cables_p = db_p.execute_fddcpi2(sro)
-                                if cables_p:
-                                    cables_all_for_cache = cables_p
-                                    troncons_ref = reconstituer_portees_bdd(
-                                        cables_p, appuis_data, tolerance=0.5
-                                    )
+                            self.emit_message(
+                                "Verif portees: aucun cache cables (BDD supprimee, alimenter via GPKG)",
+                                "orange"
+                            )
 
                         if troncons_ref:
                             self.emit_message(
@@ -1690,74 +1635,9 @@ class ComacTask(AsyncTaskBase):
             except Exception as e:
                 self.emit_message(f"Verif portees: erreur {e}", "orange")
 
-        # === Comparaison PCM vs BDD (supports POT-BT uniquement) ===
+        # === Comparaison PCM vs BDD : supprimee avec le module pcm_bdd_comparator ===
+        # A reimplementer contre le GeoPackage si besoin.
         pcm_vs_bdd_result = None
-        chemin_comac_pcm = self.params.get('chemin_comac', '')
-
-        if chemin_comac_pcm and sro:
-            try:
-                from .pcm_bdd_comparator import comparer_batch_pcm_vs_bdd
-                from .pcm_parser import parse_repertoire_pcm as _parse_pcm_batch
-
-                self.emit_progress(96)
-                self.emit_message("Comparaison PCM vs BDD (supports POT-BT)...", "grey")
-
-                if not etudes_pcm:
-                    etudes_pcm, _ = _parse_pcm_batch(
-                        chemin_comac_pcm,
-                        self.params.get('zone_climatique', 'ZVN')
-                    )
-
-                if etudes_pcm:
-                    if not appuis_data:
-                        appuis_data = _deserialize_appuis_wkb(self.qgis_data.get('appuis', []))
-
-                    if appuis_data:
-                        poteaux_bdd_dicts = []
-                        for appui in appuis_data:
-                            inf_type = appui.get('inf_type', '')
-                            if inf_type != 'POT-BT':
-                                continue
-                            geom = appui.get('geom')
-                            ax, ay = 0.0, 0.0
-                            if geom and not geom.isNull():
-                                pt = geom.asPoint()
-                                ax, ay = pt.x(), pt.y()
-                            poteaux_bdd_dicts.append({
-                                'inf_num': appui.get('inf_num', '') or appui.get('num_appui', ''),
-                                'noe_codext': appui.get('inf_num', '') or appui.get('num_appui', ''),
-                                'inf_type': inf_type,
-                                'etat': appui.get('etat', ''),
-                                'x': ax,
-                                'y': ay,
-                            })
-
-                        pcm_vs_bdd_result = comparer_batch_pcm_vs_bdd(
-                            etudes_pcm, poteaux_bdd_dicts, []
-                        )
-
-                        self.emit_message(
-                            f"PCM vs BDD: {pcm_vs_bdd_result.nb_supports_ok} supports OK, "
-                            f"{pcm_vs_bdd_result.nb_supports_absent} absents, "
-                            f"{pcm_vs_bdd_result.nb_supports_type_ko} type KO, "
-                            f"{pcm_vs_bdd_result.nb_supports_coord_ko} coord KO",
-                            "green" if (
-                                pcm_vs_bdd_result.nb_supports_absent == 0
-                                and pcm_vs_bdd_result.nb_supports_type_ko == 0
-                                and pcm_vs_bdd_result.nb_supports_coord_ko == 0
-                            ) else "orange"
-                        )
-                    else:
-                        self.emit_message(
-                            "PCM vs BDD: aucun appui QGIS disponible, comparaison supports ignoree",
-                            "orange"
-                        )
-                else:
-                    self.emit_message("PCM vs BDD: aucun fichier PCM trouve", "grey")
-            except Exception as e_pcm:
-                self.emit_message(f"PCM vs BDD: erreur {e_pcm}", "orange")
-        elif etudes_pcm and not sro:
-            self.emit_message("PCM vs BDD: SRO non disponible, etape ignoree", "grey")
 
         self.emit_progress(97)
 
@@ -1809,8 +1689,6 @@ class ComacTask(AsyncTaskBase):
 
             'appuis_wkb': self.qgis_data.get('appuis', []),
 
-            'be_type': self.params.get('be_type', 'nge'),
-
             'coords_absents': self._filter_coords_absents(resultats[0], dico_coords),
 
             'pcm_vs_bdd': pcm_vs_bdd_result,
@@ -1854,7 +1732,7 @@ class C6BdTask(AsyncTaskBase):
 
     ARCH-FIX: Reçoit données pré-extraites du main thread.
 
-    Ne fait que traitement pur (lecture Excel, comparaison pandas).
+    Ne fait que fusion pandas — Excel C6 lu sur le thread principal.
 
     """
 
@@ -1890,37 +1768,22 @@ class C6BdTask(AsyncTaskBase):
 
         self.emit_progress(10)
 
-        self.emit_message("Lecture fichiers C6...", "grey")
-
-        
-
-        # Lecture Excel - thread-safe (pas d'appel QGIS)
+        self.emit_message("Fusion donnees C6...", "grey")
 
         import pandas as pd
 
-        import os
-
-        from .C6_vs_Bd import C6_vs_Bd
-
         from .core_utils import normalize_appui_num
 
-        
-
-        c6bd = C6_vs_Bd()
-
-        df = pd.DataFrame(columns=["N° appui", "Nature des travaux", "Études", "Excel"])
-
-        
-
-        try:
-
-            df1 = c6bd.LectureFichiersExcelsC6(df, self.params['repertoire_c6'])
-
-        except Exception as e:
-
-            raise RuntimeError(f"Lecture C6 echouee: {e}") from e
-
-        
+        df1 = self.qgis_data.get("df_c6_excel")
+        if df1 is None:
+            from .C6_vs_Bd import C6_vs_Bd
+            self.emit_message("Lecture fichiers Excel C6...", "grey")
+            df_init = pd.DataFrame(
+                columns=["N° appui", "Nature des travaux", "Études", "Excel"]
+            )
+            df1 = C6_vs_Bd().LectureFichiersExcelsC6(
+                df_init, self.params["repertoire_c6"]
+            )
 
         if self.isCanceled():
 
@@ -1929,12 +1792,6 @@ class C6BdTask(AsyncTaskBase):
         
 
         self.emit_progress(40)
-
-        self.emit_message("Fusion donnees...", "grey")
-
-        
-
-        # Données pré-extraites sur main thread
 
         df2 = self.qgis_data.get('df_qgis')
 
@@ -2173,6 +2030,145 @@ class C6BdTask(AsyncTaskBase):
         return True
 
 
+class C6C3ATask(AsyncTaskBase):
+    """Tache asynchrone pour la lecture Excel C6/C3A/C7 et la fusion pandas."""
+
+    def __init__(self, params, qgis_data=None):
+        super().__init__("Comparaison C6-C3A-C7-BD", params)
+        self.qgis_data = qgis_data or {}
+
+    def execute(self):
+        if self.isCanceled():
+            return False
+
+        import os
+        import pandas as pd
+        from .C6_vs_C3A_vs_Bd import C6_vs_C3A_vs_Bd
+
+        logic = C6_vs_C3A_vs_Bd()
+        fichier_c6 = self.params['fichier_c6']
+        fichier_c3a = self.params.get('fichier_c3a', '')
+        fichier_c7 = self.params.get('fichier_c7', '')
+        mode_c3a = self.params.get('mode_c3a', 'QGIS')
+
+        self.emit_progress(15)
+        self.emit_message(
+            f"Lecture fichier C6: {os.path.basename(fichier_c6)}", "black"
+        )
+        df_init = pd.DataFrame(
+            columns=["N° appui", "Nature des travaux"], dtype="object"
+        )
+        df_c6_excel, df_c6_excel_rempl = logic.LectureFichiersExcelsC6(
+            df_init, fichier_c6
+        )
+
+        if self.isCanceled():
+            return False
+
+        self.emit_progress(40)
+        df_bd = self.qgis_data.get('df_bd', pd.DataFrame())
+        df_bd_rempl = self.qgis_data.get('df_bd_rempl', pd.DataFrame())
+
+        if mode_c3a == 'QGIS':
+            df_c3a = self.qgis_data.get('df_c3a', pd.DataFrame())
+            df_c3a_rempl = self.qgis_data.get('df_c3a_rempl', pd.DataFrame())
+        else:
+            self.emit_message(
+                f"Lecture fichier C3A: {os.path.basename(fichier_c3a)}", "black"
+            )
+            df_c3a, df_c3a_rempl = logic.liste_poteau_c3a_excel(fichier_c3a)
+
+        if self.isCanceled():
+            return False
+
+        self.emit_progress(65)
+        df_c7 = pd.DataFrame()
+        if fichier_c7:
+            self.emit_message(
+                f"Lecture fichier C7: {os.path.basename(fichier_c7)}", "black"
+            )
+            df_c7 = logic.lectureFichierC7(fichier_c7)
+
+        if self.isCanceled():
+            return False
+
+        if df_c6_excel is None:
+            df_c6_excel = pd.DataFrame()
+        if df_c6_excel_rempl is None:
+            df_c6_excel_rempl = pd.DataFrame()
+        if df_c3a is None:
+            df_c3a = pd.DataFrame()
+        if df_c3a_rempl is None:
+            df_c3a_rempl = pd.DataFrame()
+        if df_c7 is None:
+            df_c7 = pd.DataFrame()
+
+        if df_c6_excel.empty or df_bd.empty or df_c3a.empty:
+            missing = []
+            if df_c6_excel.empty:
+                missing.append("Donnees C6")
+            if df_bd.empty:
+                missing.append("Donnees BD")
+            if df_c3a.empty:
+                missing.append("Donnees C3A")
+            self.emit_message(
+                f"Attention: Des donnees sont vides ou introuvables ({', '.join(missing)})",
+                "orange",
+            )
+
+        self.emit_progress(75)
+        df_final = df_bd.copy() if not df_bd.empty else pd.DataFrame()
+        if not df_c3a.empty:
+            df_final = (
+                df_c3a.copy()
+                if df_final.empty
+                else pd.merge(df_final, df_c3a, on="N° appui", how="outer")
+            )
+        if not df_c6_excel.empty:
+            df_final = (
+                df_c6_excel.copy()
+                if df_final.empty
+                else pd.merge(df_final, df_c6_excel, on="N° appui", how="outer")
+            )
+
+        df_final_rempl = (
+            df_bd_rempl.copy() if not df_bd_rempl.empty else pd.DataFrame()
+        )
+        if not df_c3a_rempl.empty:
+            df_final_rempl = (
+                df_c3a_rempl.copy()
+                if df_final_rempl.empty
+                else pd.merge(df_final_rempl, df_c3a_rempl, on="N° appui", how="outer")
+            )
+        if not df_c6_excel_rempl.empty:
+            df_final_rempl = (
+                df_c6_excel_rempl.copy()
+                if df_final_rempl.empty
+                else pd.merge(df_final_rempl, df_c6_excel_rempl, on="N° appui", how="outer")
+            )
+        if not df_c7.empty and not df_final_rempl.empty:
+            df_final_rempl = pd.merge(
+                df_final_rempl, df_c7, on="N° appui", how="outer"
+            )
+
+        for col in df_final.columns:
+            if "inf_num" in col or "Excel" in col:
+                df_final[col] = df_final[col].fillna("ABSENT")
+
+        for col in df_final_rempl.columns:
+            if "inf_num" in col or "Excel" in col or "Fichier (C7)" in col:
+                df_final_rempl[col] = df_final_rempl[col].fillna("ABSENT")
+
+        self.emit_progress(95)
+        self.result = {
+            'df_final': df_final,
+            'df_final_rempl': df_final_rempl,
+            'chemin_export': self.params['chemin_export'],
+            'success': True,
+        }
+        return True
+
+
 
 
 
@@ -2242,10 +2238,6 @@ class PoliceC6Task(AsyncTaskBase):
 
         
 
-        # Import ici pour éviter import circulaire
-
-        from .db_connection import DatabaseConnection
-
         from .cable_analyzer import compter_cables_par_appui, _parse_attaches_geoms
 
         
@@ -2312,7 +2304,7 @@ class PoliceC6Task(AsyncTaskBase):
 
         
 
-        # 1. Récupération câbles via cache ou DatabaseConnection
+        # 1. Recuperation cables et BPE via cache (alimente par GPKG en amont)
 
         self.emit_progress(10)
 
@@ -2320,64 +2312,27 @@ class PoliceC6Task(AsyncTaskBase):
 
         try:
 
-            # === Routage NGE / Axione ===
-            be_type = self.params.get('be_type', 'nge')
-            gracethd_dir = self.params.get('gracethd_dir', '')
             attaches_raw = []
 
-            if be_type == 'axione' and gracethd_dir:
-                # Axione: charger cables et BPE depuis GraceTHD
-                from .gracethd_reader import GraceTHDReader
-                self.emit_message(f"GraceTHD: chargement ({gracethd_dir})...", "grey")
-                reader = GraceTHDReader(gracethd_dir)
-                cables_all = reader.load_cables_as_segments('DI')
-                bpe_list = reader.load_bpe()
+            cables_all = self.params.get('fddcpi_cables_cache')
 
-                self.emit_message(
-                    f"  {len(cables_all)} câbles DI charges + {len(bpe_list)} BPE depuis GraceTHD",
-                    "blue"
-                )
-
-            else:
-                # NGE: pipeline fddcpi2 standard
-                cables_all = self.params.get('fddcpi_cables_cache')
-
-                if cables_all is not None:
-
-                    self.emit_message(
-
-                        f"fddcpi2({sro}) depuis cache ({len(cables_all)} segments)",
-
-                        "grey"
-
+            if cables_all is None:
+                self.result = {
+                    'error': (
+                        "Aucun cache de cables disponible (BDD PostgreSQL supprimee). "
+                        "Alimenter params['fddcpi_cables_cache'] depuis un GeoPackage."
                     )
+                }
+                return True
 
-                else:
-
-                    self.emit_message(f"Connexion PostgreSQL et appel fddcpi2({sro})...", "grey")
-
-                    db = DatabaseConnection()
-
-                    if not db.connect():
-
-                        self.result = {'error': 'Connexion PostgreSQL impossible'}
-
-                        return True
-
-                    _t_fddcpi_c6 = _time.perf_counter()
-
-                    cables_all = db.execute_fddcpi2(sro)
-
-                    from .perf_logger import PerfLogger as _PerfLogger
-
-                    _PerfLogger.record('police_c6', 'fddcpi2_query',
-
-                                       (_time.perf_counter() - _t_fddcpi_c6) * 1000,
-
-                                       sro=sro, feature_count=len(cables_all) if cables_all else 0)
+            self.emit_message(
+                f"Cables depuis cache ({len(cables_all)} segments)",
+                "grey"
+            )
 
             # Garder câbles de distribution aériens + façade (cab_type='CDI' + posemode 1 ou 2)
             cables = [c for c in cables_all if c.cab_type == 'CDI' and c.posemode in (1, 2)]
+            p_src_label = 'GPKG'
 
             nb_exclu = len(cables_all) - len(cables)
 
@@ -2393,32 +2348,19 @@ class PoliceC6Task(AsyncTaskBase):
 
             
 
-            if be_type != 'axione' or not gracethd_dir:
-                # NGE: utiliser le cache P-02 si disponible, sinon query PG
-                bpe_list_cache = self.params.get('bpe_list_cache')
-                attaches_cache = self.params.get('attaches_cache')
-
-                if bpe_list_cache is not None:
-                    bpe_list = bpe_list_cache
-                    attaches_raw = attaches_cache or []
-                    self.emit_message(
-                        f"  {len(bpe_list)} BPE + {len(attaches_raw)} attaches depuis cache P-02",
-                        "grey"
-                    )
-                else:
-                    db_bpe = DatabaseConnection()
-
-                    if db_bpe.connect():
-
-                        bpe_list = db_bpe.query_bpe_by_sro(sro)
-
-                        attaches_raw = db_bpe.query_attaches_by_sro(sro)
-
-                    else:
-
-                        bpe_list = []
-
-                        self.emit_message("  BPE: connexion PostgreSQL impossible", "orange")
+            # BPE et attaches via cache (alimente en amont depuis GPKG)
+            bpe_list = self.params.get('bpe_list_cache') or []
+            attaches_raw = self.params.get('attaches_cache') or []
+            if bpe_list or attaches_raw:
+                self.emit_message(
+                    f"  {len(bpe_list)} BPE + {len(attaches_raw)} attaches depuis cache",
+                    "grey"
+                )
+            else:
+                self.emit_message(
+                    "  Pas de BPE/attaches en cache (verif boitier degradee)",
+                    "orange"
+                )
 
             
 
@@ -2462,7 +2404,7 @@ class PoliceC6Task(AsyncTaskBase):
 
         except Exception as e:
 
-            self.result = {'error': f'Erreur fddcpi2: {e}'}
+            self.result = {'error': f'Erreur chargement cables: {e}'}
 
             return True
 
@@ -2475,22 +2417,15 @@ class PoliceC6Task(AsyncTaskBase):
         
 
         # 2. Pre-calcul cables_par_appui (une seule fois pour toutes les etudes)
-
-        p_match = 'line' if (be_type == 'axione' and gracethd_dir) else 'endpoint'
-        p_src_label = "GraceTHD" if (be_type == 'axione' and gracethd_dir) else "BDD"
-
-        # GraceTHD: tolerance large (cable = route complete). Endpoint: 1.5m (cables parfois decales de l'appui)
-        p_tol = 2.0 if p_match == 'line' else 1.5
-
+        # Matching endpoint, tolerance 1.5m (cables parfois decales de l'appui)
         cables_par_appui_cached = compter_cables_par_appui(
-            cables, appuis_data, tolerance=p_tol,
+            cables, appuis_data, tolerance=1.5,
             attaches_parsed=attaches_parsed,
-            match_mode=p_match
         )
 
         nb_with = sum(1 for v in cables_par_appui_cached.values() if v.get('count', 0) > 0)
         self.emit_message(
-            f"Pré-calcul câbles: {nb_with}/{len(cables_par_appui_cached)} appuis avec câbles {p_src_label} (mode={p_match})",
+            f"Pre-calcul cables: {nb_with}/{len(cables_par_appui_cached)} appuis avec cables GPKG",
             "blue"
         )
 
@@ -2503,6 +2438,30 @@ class PoliceC6Task(AsyncTaskBase):
         all_anomaly_cables = []
 
         total = len(c6_files)
+        c6_parsed_cache = dict(self.params.get('c6_parsed_cache') or {})
+        missing_c6 = [
+            c6_file for _, c6_file in c6_files
+            if c6_file not in c6_parsed_cache
+        ]
+        if missing_c6:
+            from concurrent.futures import ThreadPoolExecutor
+            from .PoliceC6 import PoliceC6
+            import os as _os
+
+            def _parse_c6_worker(path):
+                try:
+                    return path, PoliceC6().lire_annexe_c6(path)
+                except Exception:
+                    return path, ({}, [], {})
+
+            if len(missing_c6) > 1:
+                workers = min(4, len(missing_c6), (_os.cpu_count() or 2))
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    for path, parsed in pool.map(_parse_c6_worker, missing_c6):
+                        c6_parsed_cache[path] = parsed
+            else:
+                path, parsed = _parse_c6_worker(missing_c6[0])
+                c6_parsed_cache[path] = parsed
 
         self.emit_message(
             f"Traitement de {total} etude(s)...", "blue"
@@ -2519,7 +2478,8 @@ class PoliceC6Task(AsyncTaskBase):
                 etude_name, c6_file,
                 cables_par_appui_cached, appuis_data,
                 bpe_geoms, attaches_parsed,
-                cables, p_src_label
+                cables, p_src_label,
+                c6_parsed_cache=c6_parsed_cache,
             )
 
             for msg, color in res.get('messages', []):
@@ -2654,8 +2614,6 @@ class PoliceC6Task(AsyncTaskBase):
             'fddcpi_sro': sro,
 
             'appuis_wkb': self.qgis_data.get('appuis', []),
-
-            'be_type': be_type,
 
         }
 
@@ -2949,7 +2907,10 @@ class GespotC6Task(AsyncTaskBase):
     """Async task for GESPOT vs C6 comparison.
 
     Zero QGIS API calls - pur Python fichier-fichier.
-    Paramètres requis : gespot_dir, c6_dir, export_dir.
+    Parametres requis : c6_dir, export_dir.
+    Parametres optionnels : gespot_dir (si gespot_rows non fourni),
+                            gespot_rows + gespot_source_label (dicts bruts
+                            extraits de la couche QGIS sur le main thread).
     """
 
     def __init__(self, params: dict):
@@ -2958,10 +2919,12 @@ class GespotC6Task(AsyncTaskBase):
     def execute(self) -> bool:
         from .gespot_c6_comparator import run_comparison
 
-        gespot_dir = self.params['gespot_dir']
+        gespot_dir = self.params.get('gespot_dir', '')
         c6_dir = self.params['c6_dir']
         export_dir = self.params['export_dir']
         etude_map = self.params.get('etude_map') or None
+        gespot_rows = self.params.get('gespot_rows')
+        gespot_source_label = self.params.get('gespot_source_label', '')
 
         def _prog(pct, msg=''):
             if self.isCanceled():
@@ -2972,7 +2935,9 @@ class GespotC6Task(AsyncTaskBase):
 
         result = run_comparison(gespot_dir, c6_dir, export_dir,
                                 progress_cb=_prog,
-                                etude_map=etude_map)
+                                etude_map=etude_map,
+                                gespot_rows=gespot_rows,
+                                gespot_source_label=gespot_source_label)
 
         if self.isCanceled():
             return False
@@ -2984,7 +2949,10 @@ class GespotC6Task(AsyncTaskBase):
             1 for a in result.anomalies
             if a.get('source') == 'GESPOT' and a.get('type') == 'FICHIER_IGNORE'
         )
-        gs_msg = f"GESPOT : {gs_read} fichier(s) CSV lus, {gs_appuis} appui(s) extraits"
+        if gespot_rows is not None:
+            gs_msg = f"GESPOT : {gs_appuis} appui(s) extraits (source: couche/BDD)"
+        else:
+            gs_msg = f"GESPOT : {gs_read} fichier(s) CSV lus, {gs_appuis} appui(s) extraits"
         if gs_skip:
             gs_msg += f", {gs_skip} ignore(s)"
         self.emit_message(gs_msg, 'orange' if gs_skip else 'grey')
@@ -3049,21 +3017,25 @@ def _run_one_study(
     etude_name, c6_file,
     cables_par_appui_cached, appuis_data,
     bpe_geoms, attaches_parsed,
-    cables, p_src_label
+    cables, p_src_label,
+    c6_parsed_cache=None,
 ):
     """P-04: Process one Police C6 study. Thread-safe (own PoliceC6 instance).
 
     Returns dict with keys: stats, anomaly_cables, messages, error.
     Messages are collected (not emitted) so caller emits them in order.
     """
-    from .PoliceC6 import PoliceC6
     from .cable_analyzer import collect_anomaly_cables
+    from .PoliceC6 import PoliceC6
 
     messages = []
     police = PoliceC6()
 
     try:
-        donnees_c6, _, boitier_c6 = police.lire_annexe_c6(c6_file)
+        if c6_parsed_cache is not None and c6_file in c6_parsed_cache:
+            donnees_c6, _, boitier_c6 = c6_parsed_cache[c6_file]
+        else:
+            donnees_c6, _, boitier_c6 = police.lire_annexe_c6(c6_file)
         if not donnees_c6:
             messages.append((f"  [!] {etude_name}: C6 vide ou illisible", "orange"))
             return {'stats': None, 'anomaly_cables': [], 'messages': messages}

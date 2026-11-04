@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 Batch Orchestrator - Bridges DialogV2 with existing workflows.
 
@@ -9,13 +17,13 @@ back to the BatchRunner callback system.
 
 import os
 import time
+from collections import deque
 
 from qgis.PyQt.QtCore import QObject
 from qgis.core import QgsMessageLog, QgsTask, QgsApplication, QgsProject
 from .compat import MSG_INFO, MSG_WARNING, MSG_CRITICAL, FIELD_TYPE_STRING
 
 from .project_detector import DetectionResult
-from .db_layer_loader import DbLayerLoader
 from .qgis_utils import (
     detect_etude_field as _detect_etude_field,
     extraire_poteaux_etude,
@@ -25,79 +33,115 @@ from .qgis_utils import (
 from .core_utils import normalize_appui_num
 from .report_export_task import UnifiedReportExportTask
 from .batch_extractor import BatchDataExtractor
+from .usage_diag import UsageDiag
+
+
+# -----------------------------------------------------------------------------
+# Taches de chargement PostgreSQL (mode BDD pour equipes internes).
+# Chargees depuis la connexion QGIS "AUVERGNE" via QgsProviderRegistry.
+# Utilisent les memes filtres que export_zip_gpkg.py (TABLE_FILTERS).
+# -----------------------------------------------------------------------------
+
 
 class _LoadProjectLayersTask(QgsTask):
-    """Background task: PG connection + layer creation for project mode.
+    """Charge les couches etude depuis PostgreSQL (infra_pt_pot, etude_cap_ft,
+    etude_comac, data_gespot) avec filtre SRO.
 
-    Network I/O (connection, metadata fetch) runs in worker thread.
-    Project registration (addMapLayer) deferred to main thread callback.
-
-    For Axione (extent_wkt set): skip infra_pt_pot (GraceTHD replaces it),
-    load etude layers by spatial intersection with GraceTHD extent.
-    For NGE (extent_wkt empty): load all layers filtered by SRO.
+    S'execute dans un thread worker QgsTask. Les couches resultantes sont
+    ajoutees au QgsProject dans le callback finished() (main thread).
     """
 
-    def __init__(self, sro, extent_wkt=''):
-        label = "Chargement couches BDD (spatial)" if extent_wkt else f"Chargement couches BDD (SRO={sro})"
-        super().__init__(label)
+    def __init__(self, sro, pg_params, extent_wkt=''):
+        super().__init__(f"Chargement couches BDD SRO={sro}")
         self.sro = sro
+        self._pg_params = pg_params
         self.extent_wkt = extent_wkt
         self.lyr_pot = None
         self.lyr_cap = None
         self.lyr_com = None
-        self.loader = None
-        self.error_msg = None
+        self.lyr_gespot = None
+        self.error_msg = ''
         self.counts = {}
 
     def run(self):
-        self.loader = DbLayerLoader()
-        if not self.loader.connect():
-            self.error_msg = "Mode Projet: connexion PostgreSQL impossible"
-            return False
-
-        if self.isCanceled():
-            return False
-
-        # Axione: skip infra_pt_pot (GraceTHD poteaux loaded on main thread)
-        if not self.extent_wkt:
-            self.lyr_pot = self.loader.load_infra_pt_pot(
-                self.sro, add_to_project=False
+        import time as _time
+        from qgis.core import QgsDataSourceUri, QgsProviderRegistry, QgsVectorLayer
+        from .export_zip_gpkg import (
+            TABLE_FILTERS, TABLE_SCHEMAS, SCHEMA, GESPOT_SCHEMA,
+            _discover_geometry, _sanitize_ident,
+        )
+        t0 = _time.monotonic()
+        try:
+            conn_uri = QgsDataSourceUri()
+            conn_uri.setConnection(
+                self._pg_params['host'], self._pg_params['port'],
+                self._pg_params['dbname'],
+                self._pg_params['user'], self._pg_params.get('password', ''),
             )
-            if not self.lyr_pot or not self.lyr_pot.isValid():
-                self.error_msg = "Mode Projet: couche infra_pt_pot non chargee"
+            md = QgsProviderRegistry.instance().providerMetadata("postgres")
+            if md is None:
+                self.error_msg = "PostgreSQL provider metadata not available"
                 return False
-            self.counts['pot'] = self.lyr_pot.featureCount()
-
-        if self.isCanceled():
+            conn = md.createConnection(conn_uri.uri(False), {})
+        except Exception as exc:
+            self.error_msg = f"Connexion BDD echouee : {exc}"
             return False
 
-        # etude_cap_ft: spatial for Axione, SRO for NGE
-        if self.extent_wkt:
-            self.lyr_cap = self.loader.load_etude_cap_ft_by_extent(self.extent_wkt)
-        else:
-            self.lyr_cap = self.loader.load_etude_cap_ft(
-                self.sro, add_to_project=False
-            )
-        if self.lyr_cap and self.lyr_cap.isValid():
-            self.counts['cap'] = self.lyr_cap.featureCount()
-        else:
-            self.lyr_cap = None
+        layers_to_load = [
+            ('infra_pt_pot', 'lyr_pot'),
+            ('etude_cap_ft', 'lyr_cap'),
+            ('etude_comac', 'lyr_com'),
+            ('data_gespot', 'lyr_gespot'),
+        ]
 
-        if self.isCanceled():
+        for table, attr in layers_to_load:
+            if self.isCanceled():
+                return False
+            schema = TABLE_SCHEMAS.get(table, SCHEMA)
+            try:
+                where_sql = TABLE_FILTERS[table](self.sro)
+                geom_info = _discover_geometry(conn, schema, table)
+                if geom_info is None:
+                    QgsMessageLog.logMessage(
+                        f"[BDD] {schema}.{table}: pas de geometrie",
+                        "PoleAerien", MSG_WARNING,
+                    )
+                    continue
+                geom_col, srid = geom_info
+                uri = QgsDataSourceUri()
+                uri.setConnection(
+                    self._pg_params['host'], self._pg_params['port'],
+                    self._pg_params['dbname'],
+                    self._pg_params['user'], self._pg_params.get('password', ''),
+                )
+                uri.setUseEstimatedMetadata(True)
+                uri.setDataSource(schema, table, geom_col, where_sql, "")
+                if srid:
+                    uri.setSrid(str(srid))
+                layer = QgsVectorLayer(uri.uri(False), table, "postgres")
+                if not layer.isValid():
+                    QgsMessageLog.logMessage(
+                        f"[BDD] {schema}.{table}: couche invalide",
+                        "PoleAerien", MSG_WARNING,
+                    )
+                    continue
+                setattr(self, attr, layer)
+                nb = layer.featureCount()
+                self.counts[table] = nb
+                QgsMessageLog.logMessage(
+                    f"[BDD] {schema}.{table}: {nb} features chargees "
+                    f"elapsed_ms={int((_time.monotonic() - t0) * 1000)}",
+                    "PoleAerien", MSG_INFO,
+                )
+            except Exception as exc:
+                QgsMessageLog.logMessage(
+                    f"[BDD] {schema}.{table}: echec chargement : {exc}",
+                    "PoleAerien", MSG_WARNING,
+                )
+
+        if self.lyr_pot is None:
+            self.error_msg = "infra_pt_pot non charge (obligatoire)"
             return False
-
-        # etude_comac: spatial for Axione, SRO for NGE
-        if self.extent_wkt:
-            self.lyr_com = self.loader.load_etude_comac_by_extent(self.extent_wkt)
-        else:
-            self.lyr_com = self.loader.load_etude_comac(
-                self.sro, add_to_project=False
-            )
-        if self.lyr_com and self.lyr_com.isValid():
-            self.counts['com'] = self.lyr_com.featureCount()
-        else:
-            self.lyr_com = None
-
         return True
 
     def finished(self, result):
@@ -105,24 +149,245 @@ class _LoadProjectLayersTask(QgsTask):
 
 
 class _PreExtractPgTask(QgsTask):
-    def __init__(self, sro, be_type, gracethd_dir):
-        super().__init__(f"Prechargement batch ({sro})")
+    """Pre-fetch cables, bpe, attaches depuis PostgreSQL avec filtre SRO.
+
+    Construit un ExtractedData equivalent a load_gpkg_delivery pour que
+    COMAC et Police C6 consomment les caches sans BDD supplementaire.
+    """
+
+    def __init__(self, sro, pg_params):
+        super().__init__(f"Prechargement batch BDD SRO={sro}")
         self.sro = sro
-        self.be_type = be_type
-        self.gracethd_dir = gracethd_dir
+        self._pg_params = pg_params
         self.data = None
-        self.error_msg = None
+        self._fddcpiax_layer = None
+        self.error_msg = ''
 
     def run(self):
+        import time as _time
+        from qgis.core import QgsDataSourceUri, QgsProviderRegistry, QgsVectorLayer
+        from .export_zip_gpkg import TABLE_FILTERS, TABLE_SCHEMAS, SCHEMA
+        from .export_zip_gpkg import _discover_geometry
+        from .batch_extractor import ExtractedData
+        from .cable_segment import CableSegment
+        t0 = _time.monotonic()
+
         try:
-            extractor = BatchDataExtractor()
-            self.data = extractor.extract_all(
-                ['comac'], None, None, None,
-                self.sro, self.be_type, self.gracethd_dir
+            conn_uri = QgsDataSourceUri()
+            conn_uri.setConnection(
+                self._pg_params['host'], self._pg_params['port'],
+                self._pg_params['dbname'],
+                self._pg_params['user'], self._pg_params.get('password', ''),
             )
+            md = QgsProviderRegistry.instance().providerMetadata("postgres")
+            if md is None:
+                self.error_msg = "PostgreSQL provider metadata not available"
+                return False
+            conn = md.createConnection(conn_uri.uri(False), {})
+        except Exception as exc:
+            self.error_msg = f"Connexion BDD echouee : {exc}"
+            return False
+
+        data = ExtractedData(sro=self.sro)
+        data.cables_source = 'pg_fddcpiax'
+
+        # Load cables decoupes via fddcpiax(sro)
+        # executeSql utilise une transaction read-write (contrairement au
+        # curseur read-only de QgsVectorLayer) : fddcpiax fait du DDL
+        # (DROP TABLE, CREATE TEMP TABLE).
+        try:
+            from .export_zip_gpkg import _sanitize_ident
+            sch = _sanitize_ident(SCHEMA)
+            sro_escaped = self.sro.replace("'", "''")
+            sql = (
+                f'SELECT gid_dc2, gid_dc, gid, sro, nro, length, '
+                f'cab_type, cab_capa, cab_modulo, cb_etiquet, posemode, '
+                f'ST_AsText(geom) AS geom_wkt '
+                f'FROM "{sch}".fddcpiax(\'{sro_escaped}\')'
+            )
+            rows = conn.executeSql(sql)
+            cables = []
+            for row in rows:
+                seg = CableSegment(
+                    gid_dc2=int(row[0] or 0),
+                    gid_dc=int(row[1] or 0),
+                    gid=int(row[2] or 0),
+                    sro=str(row[3] or ''),
+                    nro=str(row[4] or ''),
+                    length=float(row[5] or 0),
+                    cab_type=str(row[6] or ''),
+                    cab_capa=int(row[7] or 0),
+                    cab_modulo=int(row[8] or 0),
+                    cb_etiquet=str(row[9] or ''),
+                    posemode=int(row[10] or 0),
+                    geom_wkt=str(row[11] or ''),
+                )
+                cables.append(seg)
+            data.cables = cables
+            QgsMessageLog.logMessage(
+                f"[BDD] fddcpiax: {len(cables)} segments decoupes "
+                f"elapsed_ms={int((_time.monotonic() - t0) * 1000)}",
+                "PoleAerien", MSG_INFO,
+            )
+        except Exception as exc:
+            QgsMessageLog.logMessage(
+                f"[BDD] fddcpiax echoue : {exc}",
+                "PoleAerien", MSG_WARNING,
+            )
+
+        # Load bpe
+        try:
+            schema = TABLE_SCHEMAS.get('bpe', SCHEMA)
+            where_sql = TABLE_FILTERS['bpe'](self.sro)
+            geom_info = _discover_geometry(conn, schema, 'bpe')
+            if geom_info:
+                geom_col, srid = geom_info
+                uri = QgsDataSourceUri()
+                uri.setConnection(
+                    self._pg_params['host'], self._pg_params['port'],
+                    self._pg_params['dbname'],
+                    self._pg_params['user'], self._pg_params.get('password', ''),
+                )
+                uri.setUseEstimatedMetadata(True)
+                uri.setDataSource(schema, 'bpe', geom_col, where_sql, "")
+                if srid:
+                    uri.setSrid(str(srid))
+                layer = QgsVectorLayer(uri.uri(False), 'bpe', "postgres")
+                if layer.isValid():
+                    from qgis.core import QgsFeatureRequest
+                    fields = layer.fields()
+                    bpe_cols = ('gid', 'fid', 'noe_type', 'noe_codext', 'sro')
+                    bpe_idx = [fields.indexFromName(c) for c in bpe_cols if fields.indexFromName(c) >= 0]
+                    req_bpe = QgsFeatureRequest()
+                    if bpe_idx:
+                        req_bpe.setSubsetOfAttributes(bpe_idx)
+                    bpe_list = []
+                    for feat in layer.getFeatures(req_bpe):
+                        attrs = {c: feat[c] for c in bpe_cols if fields.indexFromName(c) >= 0}
+                        gid = attrs.get('gid') or attrs.get('fid')
+                        if gid is None:
+                            continue
+                        geom_wkt = feat.geometry().asWkt() if feat.hasGeometry() else ''
+                        bpe_list.append({
+                            'gid': int(gid),
+                            'geom_wkt': geom_wkt,
+                            'noe_type': str(attrs.get('noe_type', '')),
+                            'noe_codext': str(attrs.get('noe_codext', '')),
+                            'sro': str(attrs.get('sro', '')),
+                        })
+                    data.bpe_list = bpe_list
+                    QgsMessageLog.logMessage(
+                        f"[BDD] bpe: {len(bpe_list)} features",
+                        "PoleAerien", MSG_INFO,
+                    )
+        except Exception as exc:
+            QgsMessageLog.logMessage(
+                f"[BDD] bpe pre-fetch echoue : {exc}",
+                "PoleAerien", MSG_WARNING,
+            )
+
+        # Load attaches
+        try:
+            schema = TABLE_SCHEMAS.get('attaches', SCHEMA)
+            where_sql = TABLE_FILTERS['attaches'](self.sro)
+            geom_info = _discover_geometry(conn, schema, 'attaches')
+            if geom_info:
+                geom_col, srid = geom_info
+                uri = QgsDataSourceUri()
+                uri.setConnection(
+                    self._pg_params['host'], self._pg_params['port'],
+                    self._pg_params['dbname'],
+                    self._pg_params['user'], self._pg_params.get('password', ''),
+                )
+                uri.setUseEstimatedMetadata(True)
+                uri.setDataSource(schema, 'attaches', geom_col, where_sql, "")
+                if srid:
+                    uri.setSrid(str(srid))
+                layer = QgsVectorLayer(uri.uri(False), 'attaches', "postgres")
+                if layer.isValid():
+                    from qgis.core import QgsFeatureRequest
+                    fields = layer.fields()
+                    att_cols = ('gid', 'fid', 'noe_usage', 'sro')
+                    att_idx = [fields.indexFromName(c) for c in att_cols if fields.indexFromName(c) >= 0]
+                    req_att = QgsFeatureRequest()
+                    if att_idx:
+                        req_att.setSubsetOfAttributes(att_idx)
+                    attaches = []
+                    for feat in layer.getFeatures(req_att):
+                        attrs = {c: feat[c] for c in att_cols if fields.indexFromName(c) >= 0}
+                        gid = attrs.get('gid') or attrs.get('fid')
+                        if gid is None:
+                            continue
+                        geom_wkt = feat.geometry().asWkt() if feat.hasGeometry() else ''
+                        attaches.append({
+                            'gid': int(gid),
+                            'geom_wkt': geom_wkt,
+                            'noe_usage': str(attrs.get('noe_usage', '')),
+                            'sro': str(attrs.get('sro', '')),
+                        })
+                    data.attaches_raw = attaches
+                    QgsMessageLog.logMessage(
+                        f"[BDD] attaches: {len(attaches)} features",
+                        "PoleAerien", MSG_INFO,
+                    )
+        except Exception as exc:
+            QgsMessageLog.logMessage(
+                f"[BDD] attaches pre-fetch echoue : {exc}",
+                "PoleAerien", MSG_WARNING,
+            )
+
+        if data.cables is None:
+            self.error_msg = "cables non pre-charge (obligatoire)"
+            return False
+        self.data = data
+        return True
+
+    def finished(self, result):
+        pass
+
+
+class _LoadGpkgDeliveryTask(QgsTask):
+    """Tache asynchrone d'extraction et preparation d'un livrable GeoPackage/ZIP."""
+
+    def __init__(self, path, sro_hint='', keep_extracted=True, gpkg_member=None):
+        super().__init__(
+            f"Chargement GeoPackage ({os.path.basename(path)})",
+            QgsTask.CanCancel,
+        )
+        self.path = path
+        self.sro_hint = sro_hint
+        self.keep_extracted = keep_extracted
+        self.gpkg_member = gpkg_member
+        self.caches = None
+        self.error_exc = None
+
+    def run(self):
+        from .gpkg_pipeline import load_caches_from_gpkg, load_caches_from_zip
+        try:
+            self.setProgress(10)
+            lower = self.path.lower()
+            if lower.endswith('.zip'):
+                self.caches = load_caches_from_zip(
+                    self.path,
+                    sro_hint=self.sro_hint,
+                    keep_extracted=self.keep_extracted,
+                    gpkg_member=self.gpkg_member,
+                )
+            elif lower.endswith('.gpkg'):
+                self.caches = load_caches_from_gpkg(
+                    self.path,
+                    sro_hint=self.sro_hint,
+                )
+            else:
+                raise ValueError(
+                    f"Extension inattendue : {self.path}. Attendu : .zip ou .gpkg"
+                )
+            if self.isCanceled():
+                return False
+            self.setProgress(100)
             return True
-        except Exception as e:
-            self.error_msg = str(e)
+        except Exception as exc:
+            self.error_exc = exc
             return False
 
     def finished(self, result):
@@ -154,29 +419,28 @@ class BatchOrchestrator(QObject):
     Usage (in PoleAerien.__init__):
         self.batch_orch = BatchOrchestrator(
             dialog_v2, batch_runner,
-            maj_workflow, capft_workflow, comac_workflow,
-            c6bd_workflow, police_workflow, c6c3a_workflow,
-            iface
+            capft_workflow, comac_workflow,
+            police_workflow, c6c3a_workflow,
+            iface, gespot_wf=...
         )
     """
 
     def __init__(self, dialog, runner,
-                 maj_wf, capft_wf, comac_wf,
-                 c6bd_wf, police_wf, c6c3a_wf,
-                 iface, gespot_wf=None, parent=None):
+                 capft_wf, comac_wf,
+                 police_wf, c6c3a_wf,
+                 iface, gespot_wf=None, c6bd_wf=None, parent=None):
         super().__init__(parent)
         self._dlg = dialog
         self._runner = runner
         self._iface = iface
 
         # Workflows
-        self._maj_wf = maj_wf
         self._capft_wf = capft_wf
         self._comac_wf = comac_wf
-        self._c6bd_wf = c6bd_wf
         self._police_wf = police_wf
         self._c6c3a_wf = c6c3a_wf
         self._gespot_wf = gespot_wf
+        self._c6bd_wf = c6bd_wf
 
         # Per-module done callbacks: {module_key: callback}
         # Dict instead of single attr so multiple modules can run in parallel
@@ -186,6 +450,11 @@ class BatchOrchestrator(QObject):
         # Enables correct progress bar with parallel modules
         self._module_progress = {}
         self._batch_results = {}
+
+        # Diagnostic sous-traitant (envoi automatique)
+        self._diag = UsageDiag(plugin_dir=os.path.dirname(__file__))
+        self._diag_log_buffer = deque(maxlen=200)
+        self._diag_start_ts = 0.0
 
         # Shared fddcpi2 cache: avoids duplicate PostgreSQL calls
         # when both COMAC and Police C6 run in the same batch.
@@ -197,11 +466,11 @@ class BatchOrchestrator(QObject):
         # Format: {'sro': str, 'appuis_wkb': list[dict]}
         self._sro_appuis_cache = {}
 
-        # Project mode: DB-loaded layers (temporary or persistent)
-        self._db_loader = None
+        # Project mode: DB-loaded layers (temporary)
         self._pm_lyr_pot = None
         self._pm_lyr_cap = None
         self._pm_lyr_com = None
+        self._pm_lyr_gespot = None
 
         # Async layer loading state
         self._layer_load_task = None
@@ -212,11 +481,17 @@ class BatchOrchestrator(QObject):
         # P-02: pre-extracted batch data (populated before runner.start)
         self._extracted_data = None
 
-        # Register launchers
-        self._runner.set_launcher('maj', self._launch_maj)
+        # GeoPackage delivery caches (peuples par load_gpkg_delivery).
+        # Quand present, alimente _fddcpi_cache + _extracted_data avant chaque
+        # batch afin que Comac et Police C6 trouvent les cables, BPE et
+        # attaches sans recourir a la BDD supprimee.
+        self._gpkg_caches = None  # Optional[gpkg_pipeline.GpkgCaches]
+        self._gpkg_load_task = None
+
+        # Register launchers (module 'maj' retire : MAJ BD hors perimetre sous-traitant)
         self._runner.set_launcher('capft', self._launch_capft)
-        self._runner.set_launcher('comac', self._launch_comac)
         self._runner.set_launcher('c6bd', self._launch_c6bd)
+        self._runner.set_launcher('comac', self._launch_comac)
         self._runner.set_launcher('police_c6', self._launch_police_c6)
         self._runner.set_launcher('c6c3a', self._launch_c6c3a)
         self._runner.set_launcher('gespot_c6', self._launch_gespot_c6)
@@ -227,14 +502,14 @@ class BatchOrchestrator(QObject):
         self._runner.modules_finished.connect(self._on_batch_finished)
         self._runner.batch_cancelled.connect(self._on_batch_cancelled)
         self._runner.log_message.connect(self._dlg.log_message)
+        self._runner.log_message.connect(self._on_runner_log)
 
         # Connect workflow progress_changed with per-module key tagging
         # Lambda with default arg captures key at definition time (closure-safe)
         _wf_map = {
-            'maj': self._maj_wf,
             'capft': self._capft_wf,
-            'comac': self._comac_wf,
             'c6bd': self._c6bd_wf,
+            'comac': self._comac_wf,
             'police_c6': self._police_wf,
             'c6c3a': self._c6c3a_wf,
             'gespot_c6': self._gespot_wf,
@@ -248,13 +523,86 @@ class BatchOrchestrator(QObject):
         # Connect dialog signals
         self._dlg.start_requested.connect(self._on_start)
         self._dlg.cancel_requested.connect(self._on_cancel)
+        if hasattr(self._dlg, 'gpkg_delivery_requested'):
+            self._dlg.gpkg_delivery_requested.connect(self._on_gpkg_delivery)
+
+    def _on_gpkg_delivery(self, path):
+        """Slot du signal dialog `gpkg_delivery_requested` : charge un ZIP/GPKG en tache de fond."""
+        if self._gpkg_load_task is not None:
+            try:
+                self._gpkg_load_task.cancel()
+            except Exception:
+                pass
+            self._gpkg_load_task = None
+
+        self._dlg.log_message(
+            f"[GPKG] Preparation asynchrone de {os.path.basename(path)}...",
+            'info',
+        )
+        if hasattr(self._dlg, 'loadGpkgBtn'):
+            self._dlg.loadGpkgBtn.setEnabled(False)
+
+        task = _LoadGpkgDeliveryTask(path, keep_extracted=True)
+        self._gpkg_load_task = task
+        task.taskCompleted.connect(self._on_gpkg_load_done)
+        task.taskTerminated.connect(self._on_gpkg_load_failed)
+        QgsApplication.taskManager().addTask(task)
+
+    def _on_gpkg_load_done(self):
+        task = self._gpkg_load_task
+        self._gpkg_load_task = None
+        if hasattr(self._dlg, 'loadGpkgBtn'):
+            self._dlg.loadGpkgBtn.setEnabled(True)
+        if not task or not task.caches:
+            return
+        try:
+            summary = self._apply_gpkg_caches(
+                task.caches,
+                load_layers_in_qgis=True,
+            )
+            self._dlg.log_message(
+                f"[GPKG] Pret : SRO={summary['sro'] or '?'} - "
+                f"{summary['n_cables']} cables, {summary['n_bpe']} BPE, "
+                f"{summary['n_attaches']} attaches.",
+                'success',
+            )
+            if hasattr(self._dlg, 'bind_gpkg_layers'):
+                self._dlg.bind_gpkg_layers(sro_label=summary.get('sro') or '')
+            self._dlg._gpkg_caches = self._gpkg_caches
+            self._dlg._gpkg_summary = summary
+        except Exception as exc:
+            self._dlg.log_message(f"[GPKG] Erreur chargement couches : {exc}", 'error')
+            QgsMessageLog.logMessage(
+                f"BatchOrchestrator._on_gpkg_load_done: {exc}",
+                "PoleAerien", MSG_CRITICAL,
+            )
+
+    def _on_gpkg_load_failed(self):
+        task = self._gpkg_load_task
+        self._gpkg_load_task = None
+        if hasattr(self._dlg, 'loadGpkgBtn'):
+            self._dlg.loadGpkgBtn.setEnabled(True)
+        if not task or task.isCanceled():
+            return
+        exc = task.error_exc
+        if isinstance(exc, FileNotFoundError):
+            self._dlg.log_message(f"[GPKG] Fichier introuvable : {exc}", 'error')
+        elif isinstance(exc, ValueError):
+            self._dlg.log_message(f"[GPKG] Livrable invalide : {exc}", 'error')
+        else:
+            self._dlg.log_message(f"[GPKG] Erreur inattendue : {exc}", 'error')
+            QgsMessageLog.logMessage(
+                f"BatchOrchestrator._on_gpkg_load_failed: {exc}",
+                "PoleAerien", MSG_CRITICAL,
+            )
 
     # ------------------------------------------------------------------
     #  Start / Cancel
     # ------------------------------------------------------------------
     # QP-06: Noms des couches temporaires creees par le plugin
     _TEMP_LAYER_PREFIXES = (
-        'fddcpi2_', 'gracethd_cables_', 'Poteaux BT absents', 'Poteaux FT absents',
+        'cables_recales_', 'cables_decoupes_', 'gracethd_cables_',
+        'Poteaux BT absents', 'Poteaux FT absents',
         'anomalies_c6_', 'cables_anomalie',
     )
 
@@ -262,15 +610,176 @@ class BatchOrchestrator(QObject):
     _REPORT_PROGRESS_START = 85
     _REPORT_PROGRESS_END = 99
 
+    # ------------------------------------------------------------------
+    #  GeoPackage delivery : alimentation des caches batch
+    # ------------------------------------------------------------------
+    def load_gpkg_delivery(
+        self,
+        path,
+        *,
+        load_layers_in_qgis=False,
+        keep_extracted=True,
+        sro_hint='',
+        gpkg_member=None,
+    ):
+        """Charge un livrable GeoPackage (ZIP ou .gpkg) et prepare les caches.
+
+        Appelee par l'UI (dialog_v2) quand l'utilisateur pointe un livrable
+        en remplacement de l'ancienne connexion PostgreSQL. Peuple
+        `_fddcpi_cache` + `_extracted_data` pour que Comac et Police C6
+        consomment les cables / BPE / attaches sans BDD.
+
+        Args:
+            path                : chemin absolu vers un .zip ou un .gpkg.
+            load_layers_in_qgis : si True, ajoute les couches du GPKG dans
+                                  le projet QGIS courant (mode QGIS).
+            keep_extracted      : si path est un .zip, conserve le GPKG
+                                  extrait apres retour (utile si
+                                  load_layers_in_qgis=True).
+            sro_hint            : force le code SRO (sinon infere).
+            gpkg_member         : nom du .gpkg a extraire si le ZIP en
+                                  contient plusieurs.
+
+        Returns:
+            dict : resume pour l'UI (sro, n_cables, n_bpe, n_attaches,
+                   segments_layer, split_on_the_fly, source_gpkg).
+
+        Raises:
+            FileNotFoundError : fichier introuvable.
+            ValueError        : extension inconnue, GPKG sans cables,
+                                ou plusieurs GPKG dans le ZIP sans
+                                gpkg_member.
+        """
+        from .gpkg_pipeline import (
+            load_caches_from_gpkg,
+            load_caches_from_zip,
+        )
+
+        lower = path.lower()
+        if lower.endswith('.zip'):
+            caches = load_caches_from_zip(
+                path,
+                sro_hint=sro_hint,
+                keep_extracted=keep_extracted,
+                gpkg_member=gpkg_member,
+            )
+        elif lower.endswith('.gpkg'):
+            caches = load_caches_from_gpkg(path, sro_hint=sro_hint)
+        else:
+            raise ValueError(
+                f"Extension inattendue : {path}. Attendu : .zip ou .gpkg"
+            )
+
+        return self._apply_gpkg_caches(
+            caches,
+            load_layers_in_qgis=load_layers_in_qgis,
+        )
+
+    def _apply_gpkg_caches(self, caches, *, load_layers_in_qgis=False):
+        """Enregistre les caches GPKG sur le thread principal et charge les couches QGIS."""
+        from .gpkg_pipeline import load_gpkg_layers_into_qgis
+        from .batch_extractor import ExtractedData
+
+        self._gpkg_caches = caches
+        self._fddcpi_cache = {'sro': caches.sro, 'cables': caches.cables}
+
+        if self._extracted_data is None:
+            self._extracted_data = ExtractedData(sro=caches.sro)
+        else:
+            self._extracted_data.sro = caches.sro or self._extracted_data.sro
+        self._extracted_data.cables = caches.cables
+        self._extracted_data.cables_source = 'gpkg'
+        self._extracted_data.bpe_list = caches.bpe_list
+        self._extracted_data.attaches_raw = caches.attaches
+
+        if load_layers_in_qgis and caches.source_gpkg \
+                and os.path.isfile(caches.source_gpkg):
+            try:
+                load_gpkg_layers_into_qgis(
+                    caches.source_gpkg,
+                    group_name=f"SRO {caches.sro}" if caches.sro else None,
+                )
+            except Exception as exc:
+                QgsMessageLog.logMessage(
+                    f"Chargement QGIS des couches GPKG echoue : {exc}",
+                    "PoleAerien", MSG_WARNING,
+                )
+
+        self._dlg.log_message(
+            f"[GPKG] Livrable charge : SRO={caches.sro or '?'} - "
+            f"{len(caches.cables)} cables, {len(caches.bpe_list)} BPE, "
+            f"{len(caches.attaches)} attaches "
+            f"(couche : {caches.segments_layer}"
+            f"{', split a la volee' if caches.split_on_the_fly else ''})",
+            'info',
+        )
+        return {
+            'sro': caches.sro,
+            'n_cables': len(caches.cables),
+            'n_bpe': len(caches.bpe_list),
+            'n_attaches': len(caches.attaches),
+            'segments_layer': caches.segments_layer,
+            'split_on_the_fly': caches.split_on_the_fly,
+            'source_gpkg': caches.source_gpkg,
+        }
+
+    def has_gpkg_caches(self):
+        """True si un livrable GeoPackage a ete charge dans ce batch."""
+        return self._gpkg_caches is not None
+
+    def gpkg_caches_summary(self):
+        """Resume du livrable GeoPackage charge, ou None si aucun."""
+        c = self._gpkg_caches
+        if c is None:
+            return None
+        return {
+            'sro': c.sro,
+            'n_cables': len(c.cables),
+            'n_bpe': len(c.bpe_list),
+            'n_attaches': len(c.attaches),
+            'segments_layer': c.segments_layer,
+            'split_on_the_fly': c.split_on_the_fly,
+            'source_gpkg': c.source_gpkg,
+        }
+
+    def clear_gpkg_delivery(self):
+        """Decharge le livrable GeoPackage et vide les caches associes."""
+        self._gpkg_caches = None
+        self._fddcpi_cache = {}
+        if self._extracted_data is not None:
+            self._extracted_data.cables = None
+            self._extracted_data.cables_source = ''
+            self._extracted_data.bpe_list = []
+            self._extracted_data.attaches_raw = []
+
+    def _restore_gpkg_caches_if_any(self):
+        """Reinjecte les caches GPKG dans _fddcpi_cache + _extracted_data.
+
+        Appele par `_on_start` apres le reset des caches pour preserver un
+        livrable GeoPackage deja charge par l'utilisateur.
+        """
+        c = self._gpkg_caches
+        if c is None:
+            return
+        from .batch_extractor import ExtractedData
+        self._fddcpi_cache = {'sro': c.sro, 'cables': c.cables}
+        if self._extracted_data is None:
+            self._extracted_data = ExtractedData(sro=c.sro)
+        self._extracted_data.cables = c.cables
+        self._extracted_data.cables_source = 'gpkg'
+        self._extracted_data.bpe_list = c.bpe_list
+        self._extracted_data.attaches_raw = c.attaches
+
     def _on_start(self, module_keys):
         self._module_progress = {}
         self._batch_results = {}
+        self._diag_log_buffer.clear()
+        self._diag_start_ts = time.time()
         self._extracted_data = None
         self._fddcpi_cache = {}
         self._sro_appuis_cache = {}
-        self._be_type = 'nge'
-        self._gracethd_dir = ''
-        self._gracethd_lyr_preloaded = None
+        # Reinjecte un livrable GeoPackage deja charge avant ce batch.
+        self._restore_gpkg_caches_if_any()
         self._report_task = None
         self._prefetch_task = None
         self._pending_prefetch_keys = None
@@ -285,7 +794,6 @@ class BatchOrchestrator(QObject):
         sro = self._dlg.sro if self._dlg.is_project_mode else ''
         if not sro and det.sro:
             sro = det.sro
-        self._detect_be_type(sro, det)
 
         # --- Preflight checks (all-at-once before any module runs) ---
         issues = self._preflight_checks(module_keys, det)
@@ -339,144 +847,14 @@ class BatchOrchestrator(QObject):
             det_pre = self._detection()
             sro_for_fetch = det_pre.sro if det_pre else ''
         if not sro_for_fetch:
-            from .db_connection import extract_sro_from_layer
+            from .qgis_utils import extract_sro_from_layer
             lyr_pot = self._lyr_pot()
             if lyr_pot:
                 sro_for_fetch = extract_sro_from_layer(lyr_pot) or ''
         if self._start_async_pre_extract(module_keys, sro_for_fetch):
             return
 
-        self._runner.start(module_keys)
-
-    def _detect_be_type(self, sro, det):
-        """Detect bureau d'etudes (NGE/Axione).
-
-        Source de verite : toujours la table comac.sro_nge_axione en BDD.
-        GraceTHD local = indice pour gracethd_dir, pas pour be_type.
-        """
-        try:
-            if not sro:
-                return
-
-            from .db_connection import get_shared_connection
-            db = get_shared_connection()
-            if not db.connect():
-                return
-
-            be = db.query_sro_be(sro)
-            if not be:
-                return
-
-            self._be_type = be
-
-            if be == 'nge':
-                self._dlg.log_message(
-                    f"SRO {sro} - Bureau d'etudes: NGE "
-                    "(source cables: PostgreSQL / fddcpiax)",
-                    'info'
-                )
-                return
-
-            # --- Axione: verifier presence GraceTHD ---
-            self._dlg.log_message(
-                "═══════════════════════════════════════════",
-                'info'
-            )
-
-            self._dlg.log_message(
-                f"SRO {sro} - Bureau d'etudes: AXIONE",
-                'info'
-            )
-
-            if det.has_gracethd:
-                self._gracethd_dir = det.gracethd_dir
-                self._dlg.log_message(
-                    "  Methode: GraceTHD (fichiers locaux SHP + CSV)",
-                    'info'
-                )
-                self._log_gracethd_inventory(det.gracethd_dir)
-            else:
-                self._dlg.log_message(
-                    "ATTENTION: Repertoire GraceTHD introuvable dans le projet.",
-                    'warning'
-                )
-                self._dlg.log_message(
-                    "  Placez un dossier contenant t_noeud.shp + t_cableline.shp "
-                    "(+ t_cable.csv, t_ptech.csv, t_ebp.csv) dans le projet.",
-                    'warning'
-                )
-
-            self._dlg.log_message(
-                "═══════════════════════════════════════════",
-                'info'
-            )
-
-        except Exception as e:
-            QgsMessageLog.logMessage(
-                f"Erreur detection BE: {e}", "PoleAerien", MSG_WARNING
-            )
-
-    def _log_gracethd_inventory(self, gracethd_dir):
-        """Log a detailed inventory of the GraceTHD directory contents."""
-        from .gracethd_reader import GraceTHDReader
-
-        reader = GraceTHDReader(gracethd_dir)
-        inv = reader.inventory()
-
-        self._dlg.log_message(
-            f"  Repertoire: {inv['dir_name']}/",
-            'info'
-        )
-        self._dlg.log_message(
-            f"  Contenu: {inv['total_files']} fichiers "
-            f"({inv['shp_count']} SHP, {inv['csv_count']} CSV, "
-            f"{inv['other_count']} auxiliaires) - "
-            f"{inv['total_size_mb']} Mo",
-            'info'
-        )
-
-        # Tables cles avec comptage
-        self._dlg.log_message("  Tables cles:", 'info')
-        table_labels = {
-            't_noeud.shp': 'Noeuds (geometries)',
-            't_cableline.shp': 'Traces cables (geometries)',
-            't_cheminement.shp': 'Cheminements (geometries)',
-            't_cable.csv': 'Cables (attributs)',
-            't_ptech.csv': 'Points techniques',
-            't_ebp.csv': 'Boitiers (BPE/PBO)',
-        }
-        for fname, label in table_labels.items():
-            val = inv['key_tables'].get(fname)
-            if val == 'present':
-                status = 'OK'
-                level = 'success'
-            elif val == 'absent':
-                status = 'ABSENT'
-                level = 'warning'
-            elif isinstance(val, int) and val >= 0:
-                status = f'{val} enregistrements'
-                level = 'success'
-            else:
-                status = 'ABSENT'
-                level = 'warning'
-            self._dlg.log_message(
-                f"    {label:.<40s} {status}",
-                level
-            )
-
-        # Fichiers requis manquants
-        if inv['missing_required']:
-            self._dlg.log_message(
-                f"  REQUIS MANQUANTS: {', '.join(inv['missing_required'])}",
-                'error'
-            )
-
-        # Fichiers optionnels manquants (juste info)
-        if inv['missing_optional']:
-            self._dlg.log_message(
-                f"  Optionnels absents: {', '.join(inv['missing_optional'])}",
-                'warning'
-            )
+        self._start_runner(module_keys, sro_for_fetch)
 
     def _preflight_checks(self, module_keys, det=None):
         """Validate ALL prerequisites upfront. Returns list of actionable messages (empty = OK)."""
@@ -508,9 +886,9 @@ class BatchOrchestrator(QObject):
             lyr_cap = self._lyr_capft()
             lyr_com = self._lyr_comac()
 
-            needs_pot = set(module_keys) & {'maj', 'capft', 'comac', 'c6bd', 'police_c6', 'c6c3a'}
-            needs_cap = set(module_keys) & {'maj', 'capft', 'c6bd', 'c6c3a'}
-            needs_com = set(module_keys) & {'maj', 'comac'}
+            needs_pot = set(module_keys) & {'capft', 'comac', 'c6bd', 'police_c6', 'c6c3a'}
+            needs_cap = set(module_keys) & {'capft', 'c6bd', 'c6c3a'}
+            needs_com = set(module_keys) & {'comac'}
 
             if needs_pot and (not lyr_pot or not lyr_pot.isValid()):
                 issues.append(
@@ -537,20 +915,13 @@ class BatchOrchestrator(QObject):
                 )
 
         # --- Project mode: SRO ---
-        # Axione+GraceTHD: SRO non requis (intersection spatiale avec emprise GraceTHD)
-        if is_pm and not self._dlg.sro and not (self._be_type == 'axione' and self._gracethd_dir):
+        if is_pm and not self._dlg.sro:
             issues.append(
                 "Mode Projet : impossible de determiner le SRO depuis le nom du dossier. "
                 "Format attendu : XXXXX-YYY-ZZZ-NNNNN (ex: 63041-B1I-PMZ-00003)."
             )
 
         # --- Per-module resource checks ---
-        if 'maj' in module_keys and not det.has_ftbt:
-            issues.append(
-                "Module MAJ: fichier FT-BT KO non detecte. "
-                "Placez un fichier Excel contenant 'FT-BT KO' dans le nom a la racine du projet."
-            )
-
         if 'capft' in module_keys and not det.has_capft:
             issues.append(
                 "Module CAP_FT: dossier CAP FT non detecte. "
@@ -561,15 +932,6 @@ class BatchOrchestrator(QObject):
             issues.append(
                 "Module COMAC: dossier COMAC non detecte. "
                 "Noms acceptes: COMAC, Export COMAC, ETUDE COMAC."
-            )
-
-        # Axione SROs: GraceTHD required for cable verification modules
-        cable_modules = set(module_keys) & {'comac', 'police_c6'}
-        if self._be_type == 'axione' and cable_modules and not self._gracethd_dir:
-            issues.append(
-                f"SRO Axione: repertoire GraceTHD requis pour {', '.join(sorted(cable_modules))}. "
-                "Placez un dossier contenant t_noeud.shp + t_cableline.shp "
-                "(+ t_cable.csv, t_ptech.csv, t_ebp.csv) dans le projet."
             )
 
         c6_browse_modules = set(module_keys) & {'c6bd', 'police_c6'}
@@ -592,14 +954,10 @@ class BatchOrchestrator(QObject):
                 )
 
         if 'gespot_c6' in module_keys:
-            if not det.has_gespot:
-                issues.append(
-                    "Module GESPOT vs C6: dossier GSPOT/GESPOT non detecte. "
-                    "Creer un dossier nomme GSPOT ou GESPOT a la racine du projet."
-                )
             if not det.has_c6:
                 issues.append(
-                    "Module GESPOT vs C6: dossier C6 (= CAP FT) non detecte."
+                    "Module GESPOT vs C6: dossier C6 (= CAP FT) non detecte. "
+                    "GESPOT provient de la couche data_gespot (GPKG ou BDD)."
                 )
 
         return issues
@@ -628,8 +986,6 @@ class BatchOrchestrator(QObject):
             lyr_pot, lyr_cap, lyr_com,
             module_keys,
             auto_field_fn=self._auto_field,
-            be_type=self._be_type,
-            gracethd_dir=self._gracethd_dir,
             comac_dir=det.comac_dir if det.has_comac else '',
             capft_dir=det.capft_dir if det.has_capft else '',
         )
@@ -678,7 +1034,7 @@ class BatchOrchestrator(QObject):
             self._report_task.cancel()
         self._runner.cancel()
         # Cancel active workflow
-        for wf in (self._maj_wf, self._capft_wf, self._comac_wf,
+        for wf in (self._capft_wf, self._comac_wf,
                     self._c6bd_wf, self._police_wf, self._c6c3a_wf,
                     self._gespot_wf):
             if wf and hasattr(wf, 'cancel'):
@@ -718,8 +1074,44 @@ class BatchOrchestrator(QObject):
     def _finalize_batch_ui(self):
         self._create_absent_poteaux_layers()
         self._cleanup_project_mode_layers()
+        self._release_batch_memory()
         self._dlg.reset_after_batch()
         self._runner.finalize_batch()
+
+    def _release_batch_memory(self):
+        """Libere les structures lourdes intermediaires en fin de batch."""
+        import gc
+        self._batch_results.clear()
+        self._sro_appuis_cache.clear()
+        if self._gpkg_caches is None:
+            self._extracted_data = None
+            self._fddcpi_cache.clear()
+        gc.collect()
+
+    def shutdown(self):
+        """Arrete les taches actives et libere toutes les ressources au dechargement du plugin."""
+        for task in (
+            self._gpkg_load_task,
+            self._layer_load_task,
+            self._prefetch_task,
+            self._report_task,
+        ):
+            if task is not None:
+                try:
+                    task.cancel()
+                except Exception:
+                    pass
+        self._gpkg_load_task = None
+        self._layer_load_task = None
+        self._prefetch_task = None
+        self._report_task = None
+        try:
+            self._runner.cancel()
+        except Exception:
+            pass
+        self._cleanup_project_mode_layers()
+        self.clear_gpkg_delivery()
+        self._release_batch_memory()
 
     def _start_report_task(self):
         if not self._batch_results:
@@ -758,6 +1150,7 @@ class BatchOrchestrator(QObject):
             self._dlg.log_message("Batch annulé.", 'warning')
             return
         self._dlg.log_message(f"Erreur rapport: {err}", 'error')
+        self._do_diag(report_error=str(err))
         self._finalize_batch_ui()
 
     def _on_module_started(self, key, _idx, _total):
@@ -772,8 +1165,52 @@ class BatchOrchestrator(QObject):
         self._module_progress[key] = 100
         self._dlg.set_progress(self._compute_global_progress())
 
+    def _on_runner_log(self, msg, level):
+        if level in ('error', 'warning', 'critical'):
+            self._diag_log_buffer.append({'level': level, 'message': msg})
+
+    def _do_diag(self, runner_results=None, cancelled=False, report_error=None):
+        self._dlg.log_message("[Diag] Envoi diagnostic d'execution...", 'info')
+        try:
+            sro = self._dlg.sro if self._dlg.is_project_mode else ''
+            if not sro:
+                det = self._detection()
+                sro = det.sro if det else ''
+
+            durations = {}
+            for key, t0 in self._module_start_times.items():
+                durations[key] = round(time.time() - t0, 2)
+
+            modules = list(self._module_start_times.keys())
+            if runner_results is None:
+                runner_results = {}
+
+            record = self._diag.build_record(
+                modules=modules,
+                batch_results=self._batch_results,
+                runner_results=runner_results,
+                durations=durations,
+                error_buffer=list(self._diag_log_buffer),
+                sro=sro,
+            )
+            if cancelled:
+                record['cancelled'] = True
+            if report_error:
+                record['report_error'] = report_error
+
+            self._diag.submit(record)
+            self._dlg.log_message("[Diag] Diagnostic transmis (voir Message Log QGIS).", 'success')
+        except Exception as exc:
+            self._dlg.log_message(f"[Diag] Erreur collecte : {exc}", 'warning')
+            QgsMessageLog.logMessage(
+                f"usage_diag: erreur collecte : {exc}",
+                "PoleAerien",
+                MSG_WARNING,
+            )
+
     def _on_batch_finished(self, results):
         self._log_batch_recap(results)
+        self._do_diag(runner_results=results)
         self._start_report_task()
 
     def _log_batch_recap(self, runner_results):
@@ -794,8 +1231,8 @@ class BatchOrchestrator(QObject):
 
         for key, result in self._batch_results.items():
             name = {
-                'maj': 'MAJ BD', 'capft': 'CAP_FT', 'comac': 'COMAC',
-                'c6bd': 'C6 vs BD', 'police_c6': 'POLICE C6', 'c6c3a': 'C6-C3A-C7-BD',
+                'capft': 'CAP_FT', 'comac': 'COMAC',
+                'c6bd': 'C6 vs Donnees Projet', 'police_c6': 'POLICE C6', 'c6c3a': 'C6-C3A-C7-BD',
                 'gespot_c6': 'GESPOT vs C6',
             }.get(key, key)
 
@@ -824,15 +1261,7 @@ class BatchOrchestrator(QObject):
         """Extract human-readable metrics from a module result dict."""
         parts = []
 
-        if key == 'maj':
-            liste_ft = result.get('liste_ft', [])
-            liste_bt = result.get('liste_bt', [])
-            ft_count = liste_ft[2] if len(liste_ft) > 2 else 0
-            bt_count = liste_bt[2] if len(liste_bt) > 2 else 0
-            if ft_count or bt_count:
-                parts.append(f"{ft_count} FT, {bt_count} BT a mettre a jour")
-
-        elif key == 'capft':
+        if key == 'capft':
             resultats = result.get('resultats')
             dico_qgis = result.get('dico_qgis', {})
             dico_excel = result.get('dico_excel', {})
@@ -856,8 +1285,7 @@ class BatchOrchestrator(QObject):
                 nb_non_resolu = sum(1 for v in verif if v.get('statut', '').endswith('_NON_RESOLU'))
                 nb_hors_p = sum(1 for v in verif if v.get('statut', '').endswith('_HORS_PERIMETRE'))
                 if nb_ecart or nb_absent or nb_non_resolu or nb_hors_p:
-                    ref_lbl = "GraceTHD" if result.get('be_type') == 'axione' else "BDD"
-                    msg = f"{nb_ecart} ecarts cables, {nb_absent} absents {ref_lbl}"
+                    msg = f"{nb_ecart} ecarts cables, {nb_absent} absents GPKG"
                     if nb_non_resolu:
                         msg += f", {nb_non_resolu} non resolus commune/code"
                     if nb_hors_p:
@@ -981,6 +1409,8 @@ class BatchOrchestrator(QObject):
         self._cleanup_project_mode_layers()
         self._dlg.reset_after_batch()
         self._dlg.log_message("Batch annulé.", 'warning')
+        self._do_diag(cancelled=True)
+        self._release_batch_memory()
 
     # ------------------------------------------------------------------
     #  Helper: get common params from dialog
@@ -1011,7 +1441,7 @@ class BatchOrchestrator(QObject):
         mods = set(module_keys)
         layers = [
             ("infra_pt_pot", self._lyr_pot(),
-             mods & {'capft', 'comac', 'c6bd', 'police_c6', 'maj', 'gespot_c6'}),
+             mods & {'capft', 'comac', 'c6bd', 'police_c6', 'gespot_c6'}),
             ("etude_cap_ft", self._lyr_capft(),
              mods & {'capft', 'c6bd', 'police_c6', 'gespot_c6'}),
             ("etude_comac", self._lyr_comac(),
@@ -1034,55 +1464,55 @@ class BatchOrchestrator(QObject):
     #  Project Mode: async DB layer loading
     # ------------------------------------------------------------------
     def _start_async_layer_loading(self):
-        """Launch background task to load PostgreSQL layers for project mode.
-
-        Layer creation (network I/O) runs in a worker thread.
-        On completion, layers are registered in QgsProject on the main thread,
-        then the batch starts.
-
-        For Axione with GraceTHD: load poteaux from local files first (main
-        thread), compute extent, then load etude layers by spatial intersection
-        instead of SRO filter.  infra_pt_pot is skipped (GraceTHD replaces it).
-        """
-        sro = self._dlg.sro
-        extent_wkt = ''
-
-        # Axione: load GraceTHD poteaux first, compute extent for spatial query
-        if self._be_type == 'axione' and self._gracethd_dir:
-            from .gracethd_reader import GraceTHDReader
-            reader = GraceTHDReader(self._gracethd_dir)
-            gracethd_lyr = reader.load_poteaux_as_layer(
-                layer_name=f"gracethd_poteaux [{sro or 'spatial'}]"
+        """Lance le chargement asynchrone des couches depuis PostgreSQL."""
+        sro = self._dlg.sro or ''
+        if not sro:
+            det = self._detection()
+            sro = det.sro if det else ''
+        if not sro:
+            self._dlg.log_message(
+                "[BDD] SRO non determine : impossible de charger les couches.",
+                'error',
             )
-            if gracethd_lyr and gracethd_lyr.isValid() and gracethd_lyr.featureCount() > 0:
-                self._gracethd_lyr_preloaded = gracethd_lyr
-                ext = gracethd_lyr.extent()
-                extent_wkt = ext.asWktPolygon()
-                self._dlg.log_message(
-                    f"Mode Projet Axione: {gracethd_lyr.featureCount()} poteaux GraceTHD, "
-                    f"recherche etudes par intersection spatiale...", 'info'
-                )
-            else:
-                self._dlg.log_message(
-                    "GraceTHD: echec chargement poteaux, fallback SRO", 'warning'
-                )
-                self._gracethd_lyr_preloaded = None
-
-        if not sro and not extent_wkt:
-            self._dlg.log_message("Mode Projet: SRO non disponible", 'error')
             self._pending_module_keys = None
             self._dlg.reset_after_batch()
             return
 
-        if not extent_wkt:
-            self._dlg.log_message(
-                f"Mode Projet: chargement depuis BDD (SRO={sro})", 'info'
-            )
+        try:
+            from .export_zip_gpkg import _resolve_pg_params
+            pg_params = _resolve_pg_params()
+            if not pg_params or not pg_params.get('host'):
+                self._dlg.log_message(
+                    "[BDD] Connexion PostgreSQL non configuree.",
+                    'error',
+                )
+                self._pending_module_keys = None
+                self._dlg.reset_after_batch()
+                return
+        except Exception as exc:
+            self._dlg.log_message(f"[BDD] Erreur parametres PG : {exc}", 'error')
+            self._pending_module_keys = None
+            self._dlg.reset_after_batch()
+            return
 
-        self._layer_load_task = _LoadProjectLayersTask(sro, extent_wkt)
+        self._dlg.log_message(
+            f"[BDD] Chargement des couches pour SRO={sro}...", 'info',
+        )
+        self._layer_load_task = _LoadProjectLayersTask(sro, pg_params)
         self._layer_load_task.taskCompleted.connect(self._on_layers_loaded)
-        self._layer_load_task.taskTerminated.connect(self._on_layers_load_failed)
+        self._layer_load_task.taskTerminated.connect(self._on_layers_failed)
         QgsApplication.taskManager().addTask(self._layer_load_task)
+
+    def _on_layers_failed(self):
+        """Callback : echec du chargement BDD."""
+        task = self._layer_load_task
+        self._layer_load_task = None
+        msg = "Chargement BDD echoue"
+        if task and task.error_msg:
+            msg = task.error_msg
+        self._dlg.log_message(f"[BDD] {msg}", 'error')
+        self._pending_module_keys = None
+        self._dlg.reset_after_batch()
 
     def _on_layers_loaded(self):
         """Main thread callback: register layers in QgsProject, start batch."""
@@ -1092,51 +1522,14 @@ class BatchOrchestrator(QObject):
         if not task:
             return
 
-        self._db_loader = task.loader
-
-        # Always add layers to QGIS project so that get_layer_safe() and
+        # Add layers to QGIS project so that get_layer_safe() and
         # other name-based lookups work inside workflows.
-        # Cleanup after batch removes them if user didn't ask to keep.
-
-        # infra_pt_pot: GraceTHD poteaux for Axione, BDD for NGE
-        gracethd_preloaded = getattr(self, '_gracethd_lyr_preloaded', None)
-        if gracethd_preloaded and gracethd_preloaded.isValid():
-            self._pm_lyr_pot = gracethd_preloaded
-            self._gracethd_lyr_preloaded = None
+        self._pm_lyr_pot = task.lyr_pot
+        if self._pm_lyr_pot:
             QgsProject.instance().addMapLayer(self._pm_lyr_pot)
             show_feature_count(self._pm_lyr_pot)
             self._dlg.log_message(
-                f"  poteaux GraceTHD: {self._pm_lyr_pot.featureCount()} poteaux "
-                f"(source: t_ptech + t_noeud.nd_codeext)", 'success'
-            )
-            type_counts = {}
-            for feat in self._pm_lyr_pot.getFeatures():
-                t = feat['inf_type']
-                type_counts[t] = type_counts.get(t, 0) + 1
-            type_parts = [f"{t}: {n}" for t, n in sorted(type_counts.items(), key=lambda x: -x[1])]
-            self._dlg.log_message(
-                f"  classification FT/BT: {', '.join(type_parts)}", 'info'
-            )
-            # Extract SRO from etude zones found by spatial intersection
-            self._log_spatial_sro(task)
-        elif self._be_type == 'axione' and self._gracethd_dir:
-            self._dlg.log_message(
-                "  poteaux GraceTHD: echec chargement, fallback BDD", 'warning'
-            )
-            self._pm_lyr_pot = task.lyr_pot
-            QgsProject.instance().addMapLayer(self._pm_lyr_pot)
-            show_feature_count(self._pm_lyr_pot)
-            self._db_loader._loaded_layers.append(self._pm_lyr_pot.id())
-            self._dlg.log_message(
-                f"  infra_pt_pot (BDD): {task.counts.get('pot', '?')} poteaux", 'success'
-            )
-        else:
-            self._pm_lyr_pot = task.lyr_pot
-            QgsProject.instance().addMapLayer(self._pm_lyr_pot)
-            show_feature_count(self._pm_lyr_pot)
-            self._db_loader._loaded_layers.append(self._pm_lyr_pot.id())
-            self._dlg.log_message(
-                f"  infra_pt_pot: {task.counts.get('pot', '?')} poteaux", 'success'
+                f"  infra_pt_pot: {task.counts.get('infra_pt_pot', '?')} poteaux", 'success'
             )
 
         # etude_cap_ft (optional)
@@ -1144,13 +1537,12 @@ class BatchOrchestrator(QObject):
             self._pm_lyr_cap = task.lyr_cap
             QgsProject.instance().addMapLayer(self._pm_lyr_cap)
             show_feature_count(self._pm_lyr_cap)
-            self._db_loader._loaded_layers.append(self._pm_lyr_cap.id())
             self._dlg.log_message(
-                f"  etude_cap_ft: {task.counts.get('cap', '?')} zones", 'success'
+                f"  etude_cap_ft: {task.counts.get('etude_cap_ft', '?')} zones", 'success'
             )
         else:
             self._dlg.log_message(
-                "  etude_cap_ft: non disponible (modules CAP FT/MAJ limites)", 'warning'
+                "  etude_cap_ft: non disponible (modules CAP FT limites)", 'warning'
             )
             self._pm_lyr_cap = None
 
@@ -1159,15 +1551,25 @@ class BatchOrchestrator(QObject):
             self._pm_lyr_com = task.lyr_com
             QgsProject.instance().addMapLayer(self._pm_lyr_com)
             show_feature_count(self._pm_lyr_com)
-            self._db_loader._loaded_layers.append(self._pm_lyr_com.id())
             self._dlg.log_message(
-                f"  etude_comac: {task.counts.get('com', '?')} zones", 'success'
+                f"  etude_comac: {task.counts.get('etude_comac', '?')} zones", 'success'
             )
         else:
             self._dlg.log_message(
-                "  etude_comac: non disponible (module COMAC/MAJ limites)", 'warning'
+                "  etude_comac: non disponible (module COMAC limite)", 'warning'
             )
             self._pm_lyr_com = None
+
+        # data_gespot (optional, for GESPOT vs C6 module)
+        if task.lyr_gespot:
+            self._pm_lyr_gespot = task.lyr_gespot
+            QgsProject.instance().addMapLayer(self._pm_lyr_gespot)
+            show_feature_count(self._pm_lyr_gespot)
+            self._dlg.log_message(
+                f"  data_gespot: {task.counts.get('data_gespot', '?')} appuis", 'success'
+            )
+        else:
+            self._pm_lyr_gespot = None
 
         # Data quality checks on loaded layers (Mode Projet)
         keys = self._pending_module_keys
@@ -1190,20 +1592,48 @@ class BatchOrchestrator(QObject):
             # P-02: pre-fetch PG data before tasks start (project mode)
             sro_pm = self._dlg.sro or ''
             if not sro_pm and self._pm_lyr_pot:
-                from .db_connection import extract_sro_from_layer
+                from .qgis_utils import extract_sro_from_layer
                 sro_pm = extract_sro_from_layer(self._pm_lyr_pot) or ''
             if self._start_async_pre_extract(keys, sro_pm):
                 return
 
-            self._runner.start(keys)
+            self._start_runner(keys, sro_pm)
+
+    def _start_runner(self, module_keys, sro=''):
+        """Pre-extract shared WKB appuis in one pass when COMAC and Police C6 both run."""
+        if {'comac', 'police_c6'}.issubset(set(module_keys)) and not self._sro_appuis_cache:
+            lyr_pot = self._lyr_pot()
+            if lyr_pot and lyr_pot.isValid():
+                from .cable_analyzer import extraire_appuis_wkb_both
+                from .qgis_utils import extract_sro_from_layer
+                sro_val = sro or (self._dlg.sro if self._dlg.is_project_mode else '')
+                if not sro_val:
+                    det = self._detection()
+                    sro_val = (det.sro if det else '') or extract_sro_from_layer(lyr_pot) or ''
+                wkb_com, wkb_plain = extraire_appuis_wkb_both(lyr_pot)
+                self._sro_appuis_cache = {
+                    'sro': sro_val,
+                    'appuis_wkb': wkb_com,
+                    'appuis_wkb_commune': wkb_com,
+                    'appuis_wkb_plain': wkb_plain,
+                }
+        self._runner.start(module_keys)
 
     def _start_async_pre_extract(self, module_keys, sro):
         cable_modules = set(module_keys) & {'comac', 'police_c6'}
         if not cable_modules or not sro:
             return False
 
+        try:
+            from .export_zip_gpkg import _resolve_pg_params
+            pg_params = _resolve_pg_params()
+            if not pg_params or not pg_params.get('host'):
+                return False
+        except Exception:
+            return False
+
         self._pending_prefetch_keys = list(module_keys)
-        self._prefetch_task = _PreExtractPgTask(sro, self._be_type, self._gracethd_dir)
+        self._prefetch_task = _PreExtractPgTask(sro, pg_params)
         self._prefetch_task.taskCompleted.connect(self._on_pre_extract_done)
         self._prefetch_task.taskTerminated.connect(self._on_pre_extract_failed)
         QgsApplication.taskManager().addTask(self._prefetch_task)
@@ -1222,8 +1652,78 @@ class BatchOrchestrator(QObject):
                     f"[P-02] cables pre-fetches: {len(task.data.cables)} segments (source: {task.data.cables_source})",
                     'info'
                 )
+                self._load_fddcpiax_layer(task)
         if keys:
-            self._runner.start(keys)
+            self._start_runner(keys, task.data.sro if task and task.data else '')
+
+    def _load_fddcpiax_layer(self, task):
+        """Charge la couche cables_decoupes (fddcpiax) dans le projet QGIS."""
+        cables = task.data.cables
+        if not cables:
+            return
+        try:
+            from qgis.core import QgsVectorLayer, QgsFeature, QgsGeometry, QgsField, QgsProject
+            from .compat import FIELD_TYPE_LONGLONG, FIELD_TYPE_INT, FIELD_TYPE_STRING, FIELD_TYPE_DOUBLE
+            import warnings
+
+            sro_safe = (task.data.sro or 'unknown').replace('/', '_')
+            layer_name = f"cables_decoupes_{sro_safe}"
+
+            layer = QgsVectorLayer("LineString?crs=EPSG:2154", layer_name, "memory")
+            provider = layer.dataProvider()
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=DeprecationWarning)
+                provider.addAttributes([
+                    QgsField("gid_dc2", FIELD_TYPE_LONGLONG),
+                    QgsField("gid_dc", FIELD_TYPE_LONGLONG),
+                    QgsField("gid", FIELD_TYPE_INT),
+                    QgsField("cab_capa", FIELD_TYPE_INT),
+                    QgsField("cab_type", FIELD_TYPE_STRING),
+                    QgsField("cb_etiquet", FIELD_TYPE_STRING),
+                    QgsField("posemode", FIELD_TYPE_INT),
+                    QgsField("length", FIELD_TYPE_DOUBLE),
+                ])
+            layer.updateFields()
+
+            features = []
+            for c in cables:
+                if not c.geom_wkt:
+                    continue
+                geom = QgsGeometry.fromWkt(c.geom_wkt)
+                if geom.isNull() or geom.isEmpty():
+                    continue
+                feat = QgsFeature(layer.fields())
+                feat.setGeometry(geom)
+                feat.setAttribute("gid_dc2", c.gid_dc2)
+                feat.setAttribute("gid_dc", c.gid_dc)
+                feat.setAttribute("gid", c.gid)
+                feat.setAttribute("cab_capa", c.cab_capa)
+                feat.setAttribute("cab_type", c.cab_type)
+                feat.setAttribute("cb_etiquet", c.cb_etiquet)
+                feat.setAttribute("posemode", c.posemode)
+                feat.setAttribute("length", c.length)
+                features.append(feat)
+
+            provider.addFeatures(features)
+            layer.updateExtents()
+            QgsProject.instance().addMapLayer(layer)
+
+            style_path = os.path.join(
+                os.path.dirname(__file__), 'styles', 'cables_dc.qml'
+            )
+            if os.path.exists(style_path):
+                layer.loadNamedStyle(style_path)
+                layer.triggerRepaint()
+
+            self._dlg.log_message(
+                f"[P-02] couche '{layer_name}' chargee: {len(features)} cables decoupes",
+                'info'
+            )
+        except Exception as exc:
+            QgsMessageLog.logMessage(
+                f"[P-02] chargement couche cables_decoupes echoue: {exc}",
+                "PoleAerien", MSG_WARNING,
+            )
 
     def _on_pre_extract_failed(self):
         task = self._prefetch_task
@@ -1235,7 +1735,7 @@ class BatchOrchestrator(QObject):
         if task and task.error_msg:
             self._dlg.log_message(f"[P-02] pre-extraction ignoree: {task.error_msg}", 'warning')
         if keys:
-            self._runner.start(keys)
+            self._start_runner(keys, task.data.sro if task and task.data else '')
 
     def _log_spatial_sro(self, task):
         """Extract SRO from etude zones found by spatial intersection.
@@ -1287,20 +1787,26 @@ class BatchOrchestrator(QObject):
         self._dlg.reset_after_batch()
 
     def _cleanup_project_mode_layers(self):
-        """Remove temporary DB layers if user did not ask to keep them."""
-        if not self._db_loader:
-            return
-
-        if not self._dlg.load_layers_in_qgis:
-            self._db_loader.cleanup_layers()
+        """Remove temporary DB layers from QgsProject after batch."""
+        project = QgsProject.instance()
+        removed = 0
+        for lyr in (self._pm_lyr_pot, self._pm_lyr_cap,
+                    self._pm_lyr_com, self._pm_lyr_gespot):
+            if lyr is not None:
+                try:
+                    project.removeMapLayer(lyr.id())
+                    removed += 1
+                except Exception:
+                    pass
+        if removed:
             QgsMessageLog.logMessage(
-                "Mode Projet: couches temporaires supprimees", "PoleAerien", MSG_INFO
+                f"Mode Projet: {removed} couche(s) temporaire(s) supprimee(s)",
+                "PoleAerien", MSG_INFO,
             )
-
         self._pm_lyr_pot = None
         self._pm_lyr_cap = None
         self._pm_lyr_com = None
-        self._db_loader = None
+        self._pm_lyr_gespot = None
 
     def _auto_field(self, layer, _patterns=None):
         """Auto-detect study field name from layer. Delegue a qgis_utils."""
@@ -1316,106 +1822,6 @@ class BatchOrchestrator(QObject):
 
     # ------------------------------------------------------------------
     #  Module launchers
-    # ------------------------------------------------------------------
-    def _launch_maj(self, on_done):
-        """Launch MAJ FT/BT module."""
-        self._done_callbacks['maj'] = on_done
-        det = self._detection()
-
-        lyr_pot = self._lyr_pot()
-        lyr_cap = self._lyr_capft()
-        lyr_com = self._lyr_comac()
-
-        if not lyr_pot or not lyr_cap or not lyr_com:
-            on_done(False, "Couches QGIS non sélectionnées")
-            return
-
-        if not det.has_ftbt:
-            on_done(False, "Fichier FT-BT KO non détecté")
-            return
-
-        # Disconnect previous, connect for this batch
-        self._safe_connect_once(
-            self._maj_wf.analysis_finished, self._on_maj_done
-        )
-        self._safe_connect_once(
-            self._maj_wf.error_occurred, self._on_maj_error
-        )
-        self._safe_connect_once(
-            self._maj_wf.message_received, self._relay_message
-        )
-
-        col_cap = self._auto_field(lyr_cap)
-        col_com = self._auto_field(lyr_com)
-        self._maj_wf.start_analysis(
-            lyr_pot, lyr_cap, lyr_com, det.ftbt_excel,
-            col_cap=col_cap, col_com=col_com
-        )
-
-    def _on_maj_done(self, result):
-        import pandas as pd
-
-        cb = self._done_callbacks.pop('maj', None)
-        if not cb:
-            return
-
-        liste_ft = result.get('liste_ft', [0, None, 0, None])
-        liste_bt = result.get('liste_bt', [0, None, 0, None])
-        ft_count = liste_ft[2] if len(liste_ft) > 2 else 0
-        bt_count = liste_bt[2] if len(liste_bt) > 2 else 0
-        self._batch_results['maj'] = result
-
-        # Extract DataFrames of matched rows (index=gid)
-        data_ft = liste_ft[3] if len(liste_ft) > 3 and isinstance(liste_ft[3], pd.DataFrame) else pd.DataFrame()
-        data_bt = liste_bt[3] if len(liste_bt) > 3 and isinstance(liste_bt[3], pd.DataFrame) else pd.DataFrame()
-
-        if data_ft.empty and data_bt.empty:
-            cb(True, f"Analyse: {ft_count} FT, {bt_count} BT (aucune MAJ)")
-            return
-
-        # Get layer for SQL update
-        lyr = self._lyr_pot()
-        if not lyr:
-            cb(True, f"Analyse: {ft_count} FT, {bt_count} BT (couche introuvable)")
-            return
-
-        layer_name = lyr.name()
-        self._dlg.log_message("Mise a jour BD en cours...", "info")
-
-        # Save state for async callbacks
-        self._maj_pending_cb = cb
-        self._maj_ft_count = ft_count
-        self._maj_bt_count = bt_count
-
-        def _on_sql_progress(msg, pct):
-            self._dlg.log_message(msg, "info")
-
-        def _on_sql_finished(ft_updated, bt_updated):
-            self._dlg.log_message(
-                f"MAJ BD terminee: {ft_updated} FT, {bt_updated} BT mis a jour", "success"
-            )
-            done_cb = self._maj_pending_cb
-            if done_cb:
-                done_cb(True,
-                        f"Analyse: {self._maj_ft_count} FT, {self._maj_bt_count} BT"
-                        f" | MAJ: {ft_updated} FT, {bt_updated} BT")
-
-        def _on_sql_error(err):
-            self._dlg.log_message(f"Erreur MAJ SQL: {err}", "error")
-            done_cb = self._maj_pending_cb
-            if done_cb:
-                done_cb(False, f"Erreur MAJ: {err}")
-
-        self._maj_wf.start_updates_sql_background(
-            layer_name, data_ft, data_bt,
-            _on_sql_progress, _on_sql_finished, _on_sql_error
-        )
-
-    def _on_maj_error(self, err):
-        cb = self._done_callbacks.pop('maj', None)
-        if cb:
-            cb(False, str(err))
-
     # ------------------------------------------------------------------
     def _launch_capft(self, on_done):
         """Launch CAP_FT module."""
@@ -1467,6 +1873,56 @@ class BatchOrchestrator(QObject):
             cb(False, str(err))
 
     # ------------------------------------------------------------------
+    def _launch_c6bd(self, on_done):
+        """Launch C6 vs Donnees Projet module."""
+        self._done_callbacks['c6bd'] = on_done
+        det = self._detection()
+
+        lyr_pot = self._lyr_pot()
+        lyr_cap = self._lyr_capft()
+        col_cap = self._auto_field(lyr_cap)
+        export_dir = self._export_dir()
+
+        if not lyr_pot or not lyr_cap:
+            on_done(False, "Couches QGIS non selectionnees")
+            return
+        if not det.has_c6:
+            on_done(False, "Dossier C6 (= CAP FT) non detecte")
+            return
+
+        self._safe_connect_once(
+            self._c6bd_wf.analysis_finished, self._on_c6bd_analysis
+        )
+        self._safe_connect_once(
+            self._c6bd_wf.error_occurred, self._on_c6bd_error
+        )
+        self._safe_connect_once(
+            self._c6bd_wf.message_received, self._relay_message
+        )
+
+        self._c6bd_wf.start_analysis(
+            lyr_pot, lyr_cap, col_cap,
+            det.c6_dir, export_dir
+        )
+
+    def _on_c6bd_analysis(self, result):
+        err_type = result.get('error_type', '')
+        if err_type:
+            cb = self._done_callbacks.pop('c6bd', None)
+            if cb:
+                cb(False, _format_validation_error(result))
+            return
+        self._batch_results['c6bd'] = result
+        cb = self._done_callbacks.pop('c6bd', None)
+        if cb:
+            cb(True, 'OK')
+
+    def _on_c6bd_error(self, err):
+        cb = self._done_callbacks.pop('c6bd', None)
+        if cb:
+            cb(False, str(err))
+
+    # ------------------------------------------------------------------
     def _launch_comac(self, on_done):
         """Launch COMAC module."""
         self._done_callbacks['comac'] = on_done
@@ -1506,8 +1962,6 @@ class BatchOrchestrator(QObject):
             det.comac_dir, export_dir,
             fddcpi_cache=fddcpi,
             sro_appuis_cache=sro_appuis,
-            be_type=self._be_type,
-            gracethd_dir=self._gracethd_dir,
             sro=sro,
             spatial_tolerance=spatial_tol
         )
@@ -1527,7 +1981,11 @@ class BatchOrchestrator(QObject):
         # Cache SRO + appuis WKB for Police C6
         appuis_wkb = result.get('appuis_wkb')
         if sro and appuis_wkb is not None and not self._sro_appuis_cache:
-            self._sro_appuis_cache = {'sro': sro, 'appuis_wkb': appuis_wkb}
+            self._sro_appuis_cache = {
+                'sro': sro,
+                'appuis_wkb': appuis_wkb,
+                'appuis_wkb_commune': appuis_wkb,
+            }
         self._batch_results['comac'] = result
         cb = self._done_callbacks.pop('comac', None)
         if cb:
@@ -1535,52 +1993,6 @@ class BatchOrchestrator(QObject):
 
     def _on_comac_error(self, err):
         cb = self._done_callbacks.pop('comac', None)
-        if cb:
-            cb(False, str(err))
-
-    # ------------------------------------------------------------------
-    def _launch_c6bd(self, on_done):
-        """Launch C6 vs BD module."""
-        self._done_callbacks['c6bd'] = on_done
-        det = self._detection()
-
-        lyr_pot = self._lyr_pot()
-        lyr_cap = self._lyr_capft()
-        export_dir = self._export_dir()
-
-        if not lyr_pot or not lyr_cap:
-            on_done(False, "Couches QGIS non sélectionnées")
-            return
-        if not det.has_c6:
-            on_done(False, "Dossier C6 non détecté")
-            return
-
-        c6_path = det.c6_dir
-
-        self._safe_connect_once(
-            self._c6bd_wf.analysis_finished, self._on_c6bd_analysis
-        )
-        self._safe_connect_once(
-            self._c6bd_wf.error_occurred, self._on_c6bd_error
-        )
-        self._safe_connect_once(
-            self._c6bd_wf.message_received, self._relay_message
-        )
-
-        # col_cap=None → auto-detect in workflow
-        self._c6bd_wf.start_analysis(
-            lyr_pot, lyr_cap, None,
-            c6_path, export_dir
-        )
-
-    def _on_c6bd_analysis(self, result):
-        self._batch_results['c6bd'] = result
-        cb = self._done_callbacks.pop('c6bd', None)
-        if cb:
-            cb(True, 'OK')
-
-    def _on_c6bd_error(self, err):
-        cb = self._done_callbacks.pop('c6bd', None)
         if cb:
             cb(False, str(err))
 
@@ -1634,9 +2046,6 @@ class BatchOrchestrator(QObject):
         if self._sro_appuis_cache:
             params['sro_appuis_cache'] = self._sro_appuis_cache
 
-        # BE type routing (Axione -> GraceTHD)
-        params['be_type'] = self._be_type
-        params['gracethd_dir'] = self._gracethd_dir
         # En batch, pas d'export individuel: tout va dans le rapport unifie
         params['skip_individual_export'] = True
 
@@ -1667,7 +2076,11 @@ class BatchOrchestrator(QObject):
         # Cache SRO + appuis WKB for COMAC
         appuis_wkb = result.get('appuis_wkb')
         if sro and appuis_wkb is not None and not self._sro_appuis_cache:
-            self._sro_appuis_cache = {'sro': sro, 'appuis_wkb': appuis_wkb}
+            self._sro_appuis_cache = {
+                'sro': sro,
+                'appuis_wkb': appuis_wkb,
+                'appuis_wkb_plain': appuis_wkb,
+            }
         self._batch_results['police_c6'] = result
         cb = self._done_callbacks.pop('police_c6', None)
         if cb:
@@ -1756,6 +2169,10 @@ class BatchOrchestrator(QObject):
     def _launch_gespot_c6(self, on_done):
         """Lance le module GESPOT vs C6.
 
+        Priorite source GESPOT :
+            1. Couche QGIS 'data_gespot' dans le projet (GPKG ou BDD)
+            2. Dossier CSV GESPOT (fallback historique)
+
         Si les couches QGIS (infra_pt_pot + etude_cap_ft) sont disponibles,
         construit un etude_map pour annoter chaque poteau avec son nom d'etude
         ou 'HORS ETUDE'. Sinon, le module tourne en pur fichier-fichier.
@@ -1763,14 +2180,43 @@ class BatchOrchestrator(QObject):
         self._done_callbacks['gespot_c6'] = on_done
         det = self._detection()
 
-        if not det.has_gespot:
-            on_done(False, "Dossier GESPOT non detecte")
-            return
         if not det.has_c6:
             on_done(False, "Dossier C6 non detecte")
             return
         if not self._gespot_wf:
             on_done(False, "GespotWorkflow non initialise")
+            return
+
+        gespot_rows = None
+        gespot_source_label = ''
+        gespot_dir = det.gespot_dir if det.has_gespot else ''
+
+        # Source prioritaire : couche data_gespot dans le projet QGIS
+        # Extraction des dicts bruts sur le main thread (iterateur QGIS).
+        # Les regles metier (BR-01 a BR-06) seront appliquees dans le worker
+        # thread avec la whitelist C6 correcte.
+        gespot_layer = self._find_gespot_layer()
+        if gespot_layer is not None:
+            try:
+                from .gespot_layer_reader import extract_rows_from_qgs_layer
+                gespot_rows, gespot_source_label = extract_rows_from_qgs_layer(
+                    gespot_layer)
+                self._dlg.log_message(
+                    f"[GESPOT] Couche data_gespot extraite : "
+                    f"{len(gespot_rows)} features brutes",
+                    'info',
+                )
+            except Exception as exc:
+                QgsMessageLog.logMessage(
+                    f"[GESPOT] Lecture couche data_gespot echouee : {exc}",
+                    "PoleAerien", MSG_WARNING,
+                )
+                gespot_rows = None
+
+        if gespot_rows is None and not gespot_dir:
+            on_done(False,
+                    "Source GESPOT non disponible : "
+                    "aucune couche 'data_gespot' ni dossier GESPOT")
             return
 
         etude_map = self._build_gespot_etude_map()
@@ -1786,11 +2232,30 @@ class BatchOrchestrator(QObject):
         )
 
         self._gespot_wf.start_analysis(
-            gespot_dir=det.gespot_dir,
+            gespot_dir=gespot_dir,
             c6_dir=det.c6_dir,
             export_dir=det.export_dir,
             etude_map=etude_map,
+            gespot_rows=gespot_rows,
+            gespot_source_label=gespot_source_label,
         )
+
+    def _find_gespot_layer(self):
+        """Cherche une couche 'data_gespot' dans le projet QGIS.
+
+        Returns:
+            QgsVectorLayer ou None.
+        """
+        try:
+            project = QgsProject.instance()
+            layers = project.mapLayersByName('data_gespot')
+            if layers:
+                lyr = layers[0]
+                if lyr.isValid():
+                    return lyr
+        except Exception:
+            pass
+        return None
 
     def _build_gespot_etude_map(self):
         """Construit {normalized_inf_num: etude_name ou 'HORS ETUDE'}.

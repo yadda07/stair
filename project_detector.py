@@ -1,16 +1,22 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 Project folder auto-detection for PoleAerien plugin.
 
 Given a project root directory (e.g. '63041-B1I-PMZ-00003'), detects:
-- FT-BT KO Excel file     → MAJ module
 - CAP FT sub-folder        → CAP_FT, C6 vs BD, Police C6 modules
 - COMAC sub-folder          → COMAC module
 - C7 / C3A Excel files     → C6-C3A-C7-BD module
 
 Real project convention:
     <project_root>/
-        FT-BT KO *.xlsx
         CAP FT/                   ← studies + C6 annexes inside
             CMD 1/                  (also: CAPFT, ETUDE CAPFT,
                 FTTH-NGE-ETUDE-*/    ETUDE CAP FT, KPFT, etc.)
@@ -71,9 +77,6 @@ class DetectionResult:
     # SRO derived from project name
     sro: str = ''
 
-    # MAJ FT/BT
-    ftbt_excel: str = ''
-
     # CAP FT
     capft_dir: str = ''
     capft_studies: List[str] = field(default_factory=list)
@@ -98,26 +101,12 @@ class DetectionResult:
     # Export (defaults to project root)
     export_dir: str = ''
 
-    # GraceTHD directory (for Axione SROs)
-    gracethd_dir: str = ''
-
-    # SRO extracted from t_zsro.shp (zs_refpm field) inside GraceTHD directory
-    gracethd_sro: str = ''
-
     # GESPOT directory (CSV files for GESPOT vs C6 comparison)
     gespot_dir: str = ''
 
     # Diagnostics: hints for missing resources
     # List of (resource_label, hint_message) for resources NOT found
     diagnostics: List[tuple] = field(default_factory=list)
-
-    @property
-    def has_gracethd(self) -> bool:
-        return bool(self.gracethd_dir) and os.path.isdir(self.gracethd_dir)
-
-    @property
-    def has_ftbt(self) -> bool:
-        return bool(self.ftbt_excel) and os.path.isfile(self.ftbt_excel)
 
     @property
     def has_capft(self) -> bool:
@@ -147,11 +136,18 @@ class DetectionResult:
     def has_gespot(self) -> bool:
         return bool(self.gespot_dir) and os.path.isdir(self.gespot_dir)
 
+    def _has_gespot_layer(self) -> bool:
+        """Check if a valid 'data_gespot' layer exists in the QGIS project."""
+        try:
+            from qgis.core import QgsProject
+            layers = QgsProject.instance().mapLayersByName('data_gespot')
+            return bool(layers and layers[0].isValid())
+        except Exception:
+            return False
+
     def detected_modules(self) -> List[str]:
         """Return list of detected module keys."""
         modules = []
-        if self.has_ftbt:
-            modules.append('maj')
         if self.has_capft:
             modules.append('capft')
         if self.has_comac:
@@ -161,22 +157,20 @@ class DetectionResult:
             modules.append('police_c6')
         if (self.has_c6 or self.has_c6_annexe) and (self.has_c7 or self.has_c3a):
             modules.append('c6c3a')
-        if self.has_gespot and self.has_c6:
+        if self.has_c6:
             modules.append('gespot_c6')
         return modules
 
     def summary_lines(self) -> List[tuple]:
         """Return list of (label, path, found) for display."""
         return [
-            ('FT-BT KO', self.ftbt_excel, self.has_ftbt),
             ('CAP FT', self.capft_dir, self.has_capft),
             ('COMAC', self.comac_dir, self.has_comac),
             ('C6 (via CAP FT)', self.c6_dir, self.has_c6),
             ('C6 annexe', self.c6_annexe_file, self.has_c6_annexe),
             ('C7', self.c7_file, self.has_c7),
             ('C3A', self.c3a_file, self.has_c3a),
-            ('GraceTHD', self.gracethd_dir, self.has_gracethd),
-            ('GESPOT', self.gespot_dir, self.has_gespot),
+            ('GESPOT (couche data_gespot)', '(via GPKG/BDD)', self.has_gespot or self._has_gespot_layer()),
         ]
 
     def get_diagnostic(self, resource_label: str) -> str:
@@ -188,11 +182,6 @@ class DetectionResult:
 
 
 # --- Detection patterns (case-insensitive) ---
-
-_FTBT_PATTERNS = [
-    r'FT[\s_-]*BT[\s_-]*KO',
-    r'FTBTKO',
-]
 
 _CAPFT_DIR_PATTERNS = [
     r'^CAP[\s_-]*FT$',
@@ -225,9 +214,6 @@ _GESPOT_DIR_PATTERNS = [
     r'^DONNEES[\s_-]*GESPOT$',
 ]
 
-# GraceTHD signature files: any directory containing these IS a GraceTHD dir
-_GRACETHD_SIGNATURE_FILES = {'t_noeud.shp', 't_cableline.shp'}
-
 # Prefixes of plugin output files -- must be excluded from input detection
 _OUTPUT_FILE_PREFIXES = (
     'ANALYSE_', 'RAPPORT_', 'EXPORT_', 'VERIF_',
@@ -236,114 +222,13 @@ _OUTPUT_FILE_PREFIXES = (
 
 # Human-readable expected names for diagnostics
 _EXPECTED_NAMES = {
-    'FT-BT KO': 'Fichier Excel contenant "FT-BT KO" ou "FTBTKO" dans le nom (a la racine du projet)',
     'CAP FT': 'Dossier nomme: CAP FT, CAPFT, CAP_FT, ETUDE CAP FT, ETUDE CAPFT, KPFT, ETUDE KPFT',
     'COMAC': 'Dossier nomme: COMAC, Export COMAC, ExportComac, ETUDE COMAC',
     'C7': 'Fichier Excel contenant "C7" ou dossier "C7" / "Annexe C7" avec un .xlsx dedans',
     'C6 annexe': 'Fichier Excel contenant "C6" ou dossier "C6" / "Annexe C6" avec un .xlsx dedans',
     'C3A': 'Fichier Excel contenant "C3A" ou dossier "C3A" / "Annexe C3A" avec un .xlsx dedans',
-    'GraceTHD': 'Dossier contenant t_noeud.shp + t_cableline.shp (nom du dossier libre, detection par contenu)',
     'GESPOT': 'Dossier nomme: GSPOT, GESPOT, ETUDE GSPOT, ETUDE GESPOT, DONNEES GSPOT, DONNEES GESPOT',
 }
-
-# Fichiers GraceTHD requis pour validation
-_GRACETHD_REQUIRED_FILES = ['t_noeud.shp', 't_cableline.shp']
-_GRACETHD_EXPECTED_FILES = ['t_cable.csv', 't_ptech.csv', 't_ebp.csv', 't_cheminement.shp']
-
-
-def _is_gracethd_content(directory: str) -> bool:
-    """Check if directory contains GraceTHD signature files (case-insensitive).
-
-    A directory is GraceTHD if it contains at least t_noeud.shp AND t_cableline.shp.
-    """
-    try:
-        lower_files = {
-            f.lower() for f in os.listdir(directory)
-            if os.path.isfile(os.path.join(directory, f))
-        }
-    except OSError:
-        return False
-    return _GRACETHD_SIGNATURE_FILES.issubset(lower_files)
-
-
-def _find_gracethd_dir(root: str, max_depth: int = 4) -> Optional[str]:
-    """Find GraceTHD directory by content (signature files).
-
-    A directory is GraceTHD if it contains t_noeud.shp + t_cableline.shp,
-    regardless of folder name. Scans breadth-first up to max_depth levels,
-    returns the shallowest match.
-    """
-    if not root or not os.path.isdir(root):
-        return None
-
-    if _is_gracethd_content(root):
-        return root
-
-    current_level = [root]
-    for _ in range(max_depth):
-        next_level = []
-        for parent in current_level:
-            try:
-                entries = sorted(os.listdir(parent))
-            except OSError:
-                continue
-            for entry in entries:
-                full = os.path.join(parent, entry)
-                if not os.path.isdir(full):
-                    continue
-                if _is_gracethd_content(full):
-                    return full
-                next_level.append(full)
-        current_level = next_level
-        if not current_level:
-            break
-
-    return None
-
-
-def _extract_sro_from_gracethd(gracethd_dir: str) -> Optional[str]:
-    """Extract SRO from a GraceTHD directory.
-
-    Tries in order:
-    1. t_zsro.shp  -> champ zs_refpm
-    2. t_cheminement.shp -> champ cm_r3_code (first non-empty unique value)
-
-    Returns:
-        SRO string (e.g. '63041/B1I/PMZ/00003') or None if unavailable.
-    """
-    try:
-        from qgis.core import QgsVectorLayer
-    except Exception:
-        return None
-
-    # --- Tentative 1 : t_zsro.shp ---
-    sro = _read_shp_field(gracethd_dir, 't_zsro.shp', 'zs_refpm')
-    if sro:
-        return sro
-
-    # --- Tentative 2 : t_cheminement.shp (cm_r3_code) ---
-    return _read_shp_field(gracethd_dir, 't_cheminement.shp', 'cm_r3_code')
-
-
-def _read_shp_field(directory: str, filename: str, field_name: str) -> Optional[str]:
-    """Read the first non-empty value of a field from a shapefile."""
-    path = os.path.join(directory, filename)
-    if not os.path.isfile(path):
-        return None
-    try:
-        from qgis.core import QgsVectorLayer
-        layer = QgsVectorLayer(path, filename.replace('.shp', ''), 'ogr')
-        if not layer.isValid():
-            return None
-        for feat in layer.getFeatures():
-            val = feat[field_name]
-            if val:
-                raw = str(val).strip()
-                if raw:
-                    return raw
-        return None
-    except Exception:
-        return None
 
 
 def _list_folder_contents(root: str, max_items: int = 12) -> tuple:
@@ -439,14 +324,6 @@ def _build_diagnostics(result: DetectionResult, project_root: str) -> List[tuple
     diags = []
     dirs, excels = _list_folder_contents(project_root)
 
-    if not result.has_ftbt:
-        hint = _EXPECTED_NAMES['FT-BT KO']
-        if excels:
-            hint += f"\nFichiers Excel trouves a la racine: {', '.join(excels)}"
-        else:
-            hint += "\nAucun fichier Excel trouve a la racine du projet"
-        diags.append(('FT-BT KO', hint))
-
     if not result.has_capft:
         hint = _EXPECTED_NAMES['CAP FT']
         if dirs:
@@ -499,14 +376,6 @@ def _build_diagnostics(result: DetectionResult, project_root: str) -> List[tuple
                 hint += f"\nDossier(s) C3A-like trouves (sans Excel dedans?): {', '.join(c3a_like)}"
         diags.append(('C3A', hint))
 
-    if not result.has_gespot:
-        hint = _EXPECTED_NAMES['GESPOT']
-        if dirs:
-            gs_like = [d for d in dirs if 'gspot' in d.lower() or 'gespot' in d.lower()]
-            if gs_like:
-                hint += f"\nDossier(s) GESPOT-like trouves (nom non reconnu?): {', '.join(gs_like)}"
-        diags.append(('GESPOT', hint))
-
     return diags
 
 
@@ -557,8 +426,14 @@ def analyse_livrable(result: 'DetectionResult') -> dict:
 
     if result.has_capft:
         cmd = _count_cmd_folders(result.capft_dir)
-        etudes = _count_etude_folders(result.capft_dir)
-        excels = _count_excels_recursive(result.capft_dir)
+        etudes = 0
+        excels = 0
+        for _, dirnames, filenames in os.walk(result.capft_dir):
+            etudes += sum(1 for d in dirnames if 'ETUDE' in d.upper())
+            excels += sum(
+                1 for f in filenames
+                if f.lower().endswith(_EXCEL_EXT) and not f.startswith('~$')
+            )
         analysis['capft'] = {'cmd': cmd, 'etudes': etudes, 'excels': excels}
 
     if result.has_comac:
@@ -567,9 +442,6 @@ def analyse_livrable(result: 'DetectionResult') -> dict:
             'sous_dossiers': len(result.comac_studies),
             'excels': excels,
         }
-
-    if result.has_ftbt:
-        analysis['ftbt'] = {'fichier': os.path.basename(result.ftbt_excel)}
 
     if result.has_c7:
         analysis['c7'] = {'fichier': os.path.basename(result.c7_file)}
@@ -600,9 +472,6 @@ def _deduplicate_files(result: DetectionResult) -> None:
 
     # --- Rule 2: same absolute path across roles ---
     role_paths = []
-    if result.ftbt_excel:
-        role_paths.append(('FT-BT KO', 'ftbt_excel',
-                           os.path.normpath(result.ftbt_excel)))
     if result.c6_annexe_file:
         role_paths.append(('C6 annexe', 'c6_annexe_file',
                            os.path.normpath(result.c6_annexe_file)))
@@ -660,11 +529,6 @@ def detect_project(project_root: str) -> DetectionResult:
     # Derive SRO from project name (e.g. 63041-B1I-PMZ-00003 -> 63041/B1I/PMZ/00003)
     result.sro = extract_sro_from_project_name(result.project_name) or ''
 
-    # FT-BT KO Excel (in root)
-    ftbt = _find_excel(project_root, _FTBT_PATTERNS)
-    if ftbt:
-        result.ftbt_excel = ftbt
-
     # CAP FT directory
     capft = _find_dir(project_root, _CAPFT_DIR_PATTERNS)
     if capft:
@@ -719,18 +583,6 @@ def detect_project(project_root: str) -> DetectionResult:
     gespot = _find_dir(project_root, _GESPOT_DIR_PATTERNS)
     if gespot:
         result.gespot_dir = gespot
-
-    # GraceTHD directory (for Axione SROs) - content-based detection
-    gracethd = _find_gracethd_dir(project_root)
-    if gracethd:
-        result.gracethd_dir = gracethd
-        # Extract SRO from t_zsro.shp if present
-        zsro_sro = _extract_sro_from_gracethd(gracethd)
-        if zsro_sro:
-            result.gracethd_sro = zsro_sro
-            # If no SRO from folder name, use GraceTHD SRO
-            if not result.sro:
-                result.sro = zsro_sro
 
     # --- Deduplication: resolve overlapping detections ---
     _deduplicate_files(result)

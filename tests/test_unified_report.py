@@ -1,3 +1,11 @@
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 import os
 import tempfile
 import unittest
@@ -85,9 +93,9 @@ class TestUnifiedReport(unittest.TestCase):
             workbook = openpyxl.load_workbook(filepath)
             try:
                 self.assertIn('COMAC_ANALYSE', workbook.sheetnames)
-                drawing_sheets = [s for s in workbook.sheetnames if s.startswith('DESSIN_')]
+                drawing_sheets = [s for s in workbook.sheetnames if s.startswith('D_')]
                 self.assertTrue(drawing_sheets, f"No drawing sheet found in {workbook.sheetnames}")
-                self.assertIn('DESSIN_01', workbook.sheetnames)
+                self.assertIn('D_01', workbook.sheetnames)
             finally:
                 workbook.close()
 

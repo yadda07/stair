@@ -1,10 +1,18 @@
 #!/usr/bin/python
 # -*-coding:Utf-8-*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 Police C6 v2.0 - Vérification câbles découpés via fddcpi2
 
-CHANGEMENT MAJEUR: Abandon de GraceTHD au profit de la fonction PostgreSQL fddcpi2
-qui retourne des câbles correctement découpés par rapport à l'infrastructure.
+Utilise la fonction PostgreSQL fddcpi2 qui retourne des câbles correctement
+découpés par rapport à l'infrastructure.
 
 Logique:
 1. Charger les câbles découpés depuis PostgreSQL (fddcpi2)
@@ -31,7 +39,7 @@ from .qgis_utils import (
     layer_group_error,
     normalize_appui_num,
 )
-from .db_connection import extract_sro_from_layer, get_shared_connection
+from .qgis_utils import extract_sro_from_layer
 from .cable_analyzer import CableAnalyzer, AppuiChargeResult, extraire_appuis_from_layer
 from .security_rules import get_capacites_possibles
 
@@ -40,7 +48,6 @@ from dataclasses import dataclass, field
 import os
 import re
 import warnings
-import openpyxl
 
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
@@ -95,7 +102,6 @@ class PoliceC6:
     def __init__(self):
         """Initialise les attributs de classe."""
         self._cancel_requested = False
-        self.db_connection = get_shared_connection()
         self.cable_analyzer = CableAnalyzer(tolerance=0.5)
         self._reset_state()
 
@@ -105,7 +111,10 @@ class PoliceC6:
 
     def _check_cancel(self):
         """Vérifie si annulation demandée."""
-        QApplication.processEvents()
+        from qgis.PyQt.QtCore import QThread, QCoreApplication
+        app = QCoreApplication.instance()
+        if app is not None and QThread.currentThread() == app.thread():
+            QApplication.processEvents()
         if self._cancel_requested:
             raise PoliceC6Cancelled()
 
@@ -131,17 +140,6 @@ class PoliceC6:
         
         # Données C6
         self.donnees_c6: Dict[str, Dict] = {}  # num_appui -> {cables, capacites}
-
-    # =========================================================================
-    # CONNEXION BDD
-    # =========================================================================
-    def connect_database(self) -> bool:
-        """Établit la connexion à la base PostgreSQL."""
-        return self.db_connection.connect()
-
-    def disconnect_database(self):
-        """Ferme la connexion."""
-        self.db_connection.disconnect()
 
     # =========================================================================
     # EXTRACTION SRO
@@ -172,40 +170,39 @@ class PoliceC6:
         sro: str,
         layer_appuis: QgsVectorLayer,
         donnees_c6: Dict[str, str],
+        cables_cache=None,
         only_aerien: bool = True
     ) -> AnalyseChargeResult:
         """
-        Analyse la charge de câbles par appui via fddcpi2.
-        
+        Analyse la charge de cables par appui (cables fournis par cache GPKG).
+
         Args:
             sro: Code SRO (ex: '63041/B1I/PMZ/00003')
             layer_appuis: Couche des poteaux (infra_pt_pot)
             donnees_c6: Dict[num_appui, nom_cable] depuis l'Annexe C6
-            only_aerien: Si True, ne compte que les câbles aériens
-        
+            cables_cache: list[CableSegment] depuis GeoPackage. Obligatoire
+                depuis suppression de la BDD.
+            only_aerien: Si True, ne compte que les cables aeriens
+
         Returns:
             AnalyseChargeResult
         """
         result = AnalyseChargeResult(etude="", sro=sro)
-        
+
         try:
             self._check_cancel()
-            
-            # 1. Charger les câbles découpés depuis PostgreSQL
+
             QgsMessageLog.logMessage(
-                f"Chargement câbles découpés pour SRO: {sro}",
+                f"Analyse cables pour SRO: {sro}",
                 "PoleAerien", MSG_INFO
             )
-            
-            if not self.db_connection.connection:
-                if not self.connect_database():
-                    result.erreur = "Impossible de se connecter à la base PostgreSQL"
-                    return result
-            
-            cables_decoupes = self.db_connection.execute_fddcpi2(sro)
-            
+
+            cables_decoupes = cables_cache
             if not cables_decoupes:
-                result.erreur = f"Aucun câble trouvé pour SRO: {sro}"
+                result.erreur = (
+                    "Aucun cache cables fourni (BDD PostgreSQL supprimee). "
+                    "Alimenter cables_cache depuis le GeoPackage livre."
+                )
                 return result
             
             self._check_cancel()
@@ -296,17 +293,24 @@ class PoliceC6:
             return donnees_par_appui, liste_brute, boitier_par_appui
         
         try:
-            wb = openpyxl.load_workbook(chemin_c6, data_only=True)
-            
-            sheet = None
+            from .lib_compat import (
+                list_xlsx_sheet_names_stdlib,
+                read_xlsx_sheet_with_bold_stdlib,
+            )
+
+            sheet_names = list_xlsx_sheet_names_stdlib(chemin_c6)
+            sheet_name = None
             for name in ['Export 1', 'export 1', 'Appui', 'APPUI', 'appui', 'Appuis']:
-                if name in wb.sheetnames:
-                    sheet = wb[name]
+                if name in sheet_names:
+                    sheet_name = name
                     break
-            
-            if not sheet:
-                sheet = wb.active
-            
+            if not sheet_name and sheet_names:
+                sheet_name = sheet_names[0]
+            if not sheet_name:
+                return donnees_par_appui, liste_brute, boitier_par_appui
+
+            rows = read_xlsx_sheet_with_bold_stdlib(chemin_c6, sheet_name)
+
             # Scanner les lignes pour trouver la VRAIE ligne d'en-têtes
             # (la ligne 1 est souvent des métadonnées: n° commande, date, etc.)
             header_row_idx = None
@@ -339,10 +343,10 @@ class PoliceC6:
                 'pose_boitier', 'pose_boîtier'
             ]
             
-            for row_idx, row in enumerate(sheet.iter_rows(min_row=1, max_row=15, values_only=True), start=1):
+            for row_idx, row in enumerate(rows[:15], start=1):
                 if not row:
                     continue
-                row_headers = [str(cell or '').strip().lower() for cell in row]
+                row_headers = [str((cell[0] if cell else None) or '').strip().lower() for cell in row]
                 
                 test_appui = self._find_column_index(row_headers, appui_candidates)
                 test_cable = self._find_column_index(row_headers, cable_candidates)
@@ -361,42 +365,47 @@ class PoliceC6:
             if header_row_idx is None or col_num_appui == -1:
                 # Log toutes les premières lignes pour debug
                 debug_rows = []
-                for r_idx, r in enumerate(sheet.iter_rows(min_row=1, max_row=5, values_only=True), start=1):
+                for r_idx, r in enumerate(rows[:5], start=1):
                     if r:
-                        debug_rows.append(f"  Row{r_idx}: {[str(c or '')[:30] for c in r[:5]]}")
+                        debug_rows.append(
+                            f"  Row{r_idx}: {[str((c[0] if c else None) or '')[:30] for c in r[:5]]}"
+                        )
                 QgsMessageLog.logMessage(
                     f"En-têtes C6 non trouvées. Premières lignes:\n" + "\n".join(debug_rows),
                     "PoleAerien", MSG_WARNING
                 )
-                wb.close()
                 return donnees_par_appui, liste_brute, boitier_par_appui
             
             current_appui = None
             appuis_edf = set()
             
-            for row_idx, row in enumerate(
-                sheet.iter_rows(min_row=header_row_idx + 1, values_only=False),
-                start=header_row_idx + 1
-            ):
-                if not row or all(c.value is None for c in row):
+            for row_idx, row in enumerate(rows[header_row_idx:], start=header_row_idx + 1):
+                if not row or all((c[0] if c else None) is None for c in row):
                     continue
-                
-                raw_num = str(row[col_num_appui].value or '').strip() if col_num_appui < len(row) else ''
-                nom_cable = str(row[col_nom_cable].value or '').strip() if col_nom_cable >= 0 and col_nom_cable < len(row) else ''
-                cable_is_bold = False
-                if col_nom_cable >= 0 and col_nom_cable < len(row):
-                    font = row[col_nom_cable].font
-                    cable_is_bold = bool(font and font.bold)
-                
+
+                def _cell_val(col_idx: int):
+                    if col_idx < 0 or col_idx >= len(row):
+                        return None
+                    cell = row[col_idx]
+                    return cell[0] if cell else None
+
+                def _cell_bold(col_idx: int) -> bool:
+                    if col_idx < 0 or col_idx >= len(row):
+                        return False
+                    cell = row[col_idx]
+                    return bool(cell[1]) if cell else False
+
+                raw_num = str(_cell_val(col_num_appui) or '').strip()
+                nom_cable = str(_cell_val(col_nom_cable) or '').strip() if col_nom_cable >= 0 else ''
+                cable_is_bold = _cell_bold(col_nom_cable) if col_nom_cable >= 0 else False
+
                 # Détecter appui EDF: colonne "Effort disponible avant ajout câble" renseignée
-                effort_val = None
-                if col_effort_dispo >= 0 and col_effort_dispo < len(row):
-                    effort_val = row[col_effort_dispo].value
-                
+                effort_val = _cell_val(col_effort_dispo) if col_effort_dispo >= 0 else None
+
                 # Détecter pose boîtier (PB ou PEO)
                 boitier_val = ''
-                if col_pose_boitier >= 0 and col_pose_boitier < len(row):
-                    bv = str(row[col_pose_boitier].value or '').strip().upper()
+                if col_pose_boitier >= 0:
+                    bv = str(_cell_val(col_pose_boitier) or '').strip().upper()
                     if bv in ('PB', 'PEO'):
                         boitier_val = bv
                 
@@ -437,10 +446,8 @@ class PoliceC6:
                 for appui_edf in appuis_edf:
                     donnees_par_appui.pop(appui_edf, None)
             
-            wb.close()
-            
             return donnees_par_appui, liste_brute, boitier_par_appui
-            
+
         except Exception as e:
             QgsMessageLog.logMessage(
                 f"Erreur lecture C6: {e}",
@@ -615,7 +622,7 @@ class PoliceC6:
         cables_par_appui: Dict[str, Dict],
         ref_label: str = 'BDD'
     ) -> List[Dict]:
-        """Compare cables C6 vs BDD/GraceTHD. Delegue a cable_analyzer.comparer_source_cables()."""
+        """Compare cables C6 vs BDD. Delegue a cable_analyzer.comparer_source_cables()."""
         from .cable_analyzer import comparer_source_cables
         return comparer_source_cables(
             donnees_c6, cables_par_appui,

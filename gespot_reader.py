@@ -1,20 +1,36 @@
 # -*- coding: utf-8 -*-
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
-Lecture et normalisation des fichiers CSV GESPOT.
+Lecture et normalisation des données GESPOT (CSV ou BDD/GPKG).
 
-Responsabilité unique : parser les CSV GESPOT et appliquer les règles
+Responsabilité unique : parser les sources GESPOT et appliquer les règles
 métier BR-01 à BR-06 (+ BR-03bis/ter, BR-04bis) pour produire des
 enregistrements comparables aux champs C6.
+
+Deux modes de lecture :
+    - CSV positionnel  : load_gespot_dir() (historique, dossier de CSV)
+    - Noms de colonnes : load_gespot_from_rows() (BDD, GPKG, dict nommés)
 
 Zéro dépendance QGIS - thread-safe.
 """
 
 import csv
+import logging
 import os
+import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .core_utils import normalize_appui_num
+
+_logger = logging.getLogger(__name__)
 
 _GESPOT_HEADER_MARKERS = {'NUM', 'CARAC1', 'CENTRE'}
 
@@ -84,6 +100,47 @@ class GespotLoadResult:
 #  RÈGLES MÉTIER
 # ===========================================================================
 
+def _normalize_oui_non(value: str) -> str:
+    """Normalise une valeur binaire Oui/Non en tenant compte des variantes NULL.
+
+    Toute valeur représentant une absence (None, '', 'Non', 'NON', 'N', 'NULL',
+    'null') est normalisée en 'Non'. Sinon, la valeur est retournée telle quelle
+    (typiquement 'O' ou 'Oui' pour les cas positifs).
+
+    Args:
+        value: La valeur brute à normaliser.
+
+    Returns:
+        'Non' si la valeur représente une absence, sinon la valeur originale.
+    """
+    if value is None:
+        return 'Non'
+    v = str(value).strip().upper()
+    if not v or v in {'NON', 'N', 'NULL'}:
+        return 'Non'
+    return str(value).strip()
+
+
+def _normalize_to_empty(value: str) -> str:
+    """Normalise une valeur texte en remplaçant les variantes NULL par vide.
+
+    Toute valeur représentant une absence (None, '', 'Non', 'NON', 'N', 'NULL',
+    'null') est normalisée en ''.
+
+    Args:
+        value: La valeur brute à normaliser.
+
+    Returns:
+        '' si la valeur représente une absence, sinon la valeur originale.
+    """
+    if value is None:
+        return ''
+    v = str(value).strip().upper()
+    if not v or v in {'NON', 'N', 'NULL'}:
+        return ''
+    return str(value).strip()
+
+
 def _br01_calc_type(type_raw: str, caracs: List[str]) -> str:
     """BR-01 : Calcule le type d'appui final depuis type + CARAC1-5."""
     base = type_raw.strip()
@@ -105,7 +162,7 @@ def _br02_calc_strategie(strategique: str, support_pc: str,
     """BR-02 : Calcule la stratégie depuis strategique + support_pc + CARAC1-5."""
     if strategique.strip().upper() != 'O':
         return 'Non'
-    sp = support_pc.strip()
+    sp = _normalize_to_empty(support_pc)
     if sp:
         return sp
     for carac in caracs:
@@ -138,21 +195,24 @@ def _br04_calc_etat(etat_pts: List[Tuple[str, str]]) -> Tuple[str, str, str]:
 
 
 def _br04bis_calc_pres_elect(pres_elect_raw: str) -> str:
-    """BR-04 bis : Normalise pres_elect (vide → 'Non')."""
-    v = pres_elect_raw.strip()
-    return v if v else 'Non'
+    """BR-04 bis : Normalise pres_elect (vide/NULL/Non → 'Non')."""
+    return _normalize_oui_non(pres_elect_raw)
 
 
 def _br05_calc_inacc(inacc_raw: str, has_inacc_env: bool) -> str:
     """BR-05 : Calcule l'inaccessibilité véhicule."""
-    if inacc_raw.strip().upper() == 'O' or has_inacc_env:
+    # Si env IN8 est present, il prime sur tout
+    if has_inacc_env:
+        return 'Oui'
+    # Sinon, si inacc_raw est explicitement 'O'/'OUI', on retourne 'Oui'
+    if _normalize_oui_non(inacc_raw) != 'Non':
         return 'Oui'
     return 'Non'
 
 
 def _br06_calc_recalage(recalage_raw: str) -> str:
     """BR-06 : Inversion RECALAGE → verticalité attendue C6."""
-    if recalage_raw.strip().upper() == 'O':
+    if _normalize_oui_non(recalage_raw) != 'Non':
         return 'Non'
     return 'Oui'
 
@@ -234,7 +294,182 @@ def _build_record(row: List[str], source: str,
 
 
 # ===========================================================================
-#  CHARGEMENT DU RÉPERTOIRE
+#  LECTURE PAR NOMS DE COLONNES (BDD / GPKG)
+# ===========================================================================
+
+_NAMED_CARAC_KEYS = ('carac1', 'carac2', 'carac3', 'carac4', 'carac5')
+_NAMED_ENV_KEYS = ('env1', 'env2', 'env3', 'env4', 'env5')
+_NAMED_ETAT_KEYS = (
+    ('etat_pt1', 'declass_pt1'),
+    ('etat_pt2', 'declass_pt2'),
+    ('etat_pt3', 'declass_pt3'),
+)
+
+
+def _attr_str(attrs: Dict[str, Any], key: str) -> str:
+    """Extrait une valeur d'un dict d'attributs, normalise en str.strip()."""
+    v = attrs.get(key)
+    if v is None:
+        return ''
+    return str(v).strip()
+
+
+def _build_record_from_dict(
+    attrs: Dict[str, Any],
+    source: str,
+    whitelist_upper: Set[str],
+) -> GespotRecord:
+    """Construit un GespotRecord depuis un dict d'attributs nommés.
+
+    Mapping entre colonnes BDD/GPKG et GespotRecord :
+        num, voie, num_voie, centre, distance_electrique, source_file,
+        type, strategique, pres_elect, support_pc, inacc, recalage,
+        carac1-5, env1-5, etat_pt1-3 + declass_pt1-3
+
+    Réutilise les mêmes règles métier BR-01 à BR-06 que _build_record().
+    """
+    caracs = [_attr_str(attrs, k) for k in _NAMED_CARAC_KEYS]
+    envs = [_attr_str(attrs, k) for k in _NAMED_ENV_KEYS]
+    etat_pts = [
+        (_attr_str(attrs, ek), _attr_str(attrs, dk))
+        for ek, dk in _NAMED_ETAT_KEYS
+    ]
+
+    milieu, has_inacc_env = _br03_calc_env(envs)
+    etat_no_yellow, etat_usable, ctrl_visuel = _br04_calc_etat(etat_pts)
+
+    return GespotRecord(
+        num=_attr_str(attrs, 'num'),
+        voie=_attr_str(attrs, 'voie'),
+        num_voie=_attr_str(attrs, 'num_voie'),
+        centre=_attr_str(attrs, 'centre'),
+        dist_elec=_attr_str(attrs, 'distance_electrique'),
+        source_file=_attr_str(attrs, 'source_file') or source,
+        type_calc=_br01_calc_type(_attr_str(attrs, 'type'), caracs),
+        strategie_calc=_br02_calc_strategie(
+            _attr_str(attrs, 'strategique'),
+            _attr_str(attrs, 'support_pc'),
+            caracs, whitelist_upper),
+        milieu_calc=milieu,
+        pres_elect_calc=_br04bis_calc_pres_elect(
+            _attr_str(attrs, 'pres_elect')),
+        inacc_calc=_br05_calc_inacc(
+            _attr_str(attrs, 'inacc'), has_inacc_env),
+        recalage_raw=_attr_str(attrs, 'recalage'),
+        etat_no_yellow=etat_no_yellow,
+        etat_usable=etat_usable,
+        ctrl_visuel=ctrl_visuel,
+    )
+
+
+def load_gespot_from_rows(
+    rows: List[Dict[str, Any]],
+    source_label: str = '',
+    whitelist: Optional[set] = None,
+) -> GespotLoadResult:
+    """Charge des enregistrements GESPOT depuis une liste de dicts nommés.
+
+    Source typique : couche QGIS (data_gespot), requête PostgreSQL, ou
+    tout autre producteur de dicts avec clés nommées (num, voie, centre,
+    type, carac1-5, env1-5, etat_pt1-3, declass_pt1-3, ...).
+
+    Args:
+        rows:         Liste de dicts d'attributs (clés = noms de colonnes).
+        source_label: Label de source pour les anomalies (ex: 'data_gespot').
+        whitelist:    Ensemble de codes stratégie valides (depuis Bases col M).
+
+    Returns:
+        GespotLoadResult avec records indexés par NUM, anomalies, compteurs.
+    """
+    t0 = time.monotonic()
+    if whitelist is None:
+        whitelist = set()
+    whitelist_upper = {v.upper() for v in whitelist}
+
+    result = GespotLoadResult()
+    raw_by_num: Dict[str, List[dict]] = {}
+
+    for idx, attrs in enumerate(rows):
+        num_raw = _attr_str(attrs, 'num')
+        if not num_raw:
+            continue
+        num_key = normalize_appui_num(num_raw)
+        if not num_key:
+            continue
+        raw_by_num.setdefault(num_key, []).append({
+            'attrs': attrs, 'source': source_label, 'idx': idx,
+        })
+
+    _resolve_duplicates_from_dict(raw_by_num, result, whitelist_upper)
+
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    n_items = len(result.records)
+    _logger.debug(
+        "load_gespot_from_rows source=%s n_rows=%d n_items=%d "
+        "n_anomalies=%d elapsed_ms=%d",
+        source_label, len(rows), n_items, len(result.anomalies), elapsed_ms,
+    )
+    if source_label:
+        result.file_counts[source_label] = n_items
+    return result
+
+
+def _resolve_duplicates_from_dict(
+    raw_by_num: Dict[str, List[dict]],
+    result: GespotLoadResult,
+    whitelist_upper: Set[str],
+) -> None:
+    """Résout les doublons NUM pour les dicts nommés et alimente records."""
+    for num, entries in raw_by_num.items():
+        if len(entries) == 1:
+            rec = _build_record_from_dict(
+                entries[0]['attrs'], entries[0]['source'], whitelist_upper)
+            result.records[num] = rec
+            continue
+
+        payloads = [
+            tuple(sorted(e['attrs'].items()))
+            for e in entries
+        ]
+        if len(set(payloads)) == 1:
+            rec = _build_record_from_dict(
+                entries[0]['attrs'], entries[0]['source'], whitelist_upper)
+            result.records[num] = rec
+            result.anomalies.append({
+                'source': 'GESPOT',
+                'fichier': entries[0]['source'], 'num': num,
+                'type': 'DOUBLON_IDENTIQUE',
+                'detail': (
+                    f"L'appui {num} apparait {len(entries)} fois dans la source "
+                    f"GESPOT avec exactement les memes valeurs. "
+                    f"Une seule version a ete conservee automatiquement"
+                ),
+                'action': (
+                    "Aucune correction bloquante. Vous pouvez nettoyer les "
+                    "doublons GESPOT si vous voulez fiabiliser la source"
+                ),
+            })
+        else:
+            sources = ', '.join(sorted({e['source'] for e in entries}))
+            result.anomalies.append({
+                'source': 'GESPOT',
+                'fichier': sources, 'num': num,
+                'type': 'DOUBLON_CONFLICTUEL',
+                'detail': (
+                    f"L'appui {num} apparait {len(entries)} fois dans GESPOT "
+                    f"avec des valeurs differentes. "
+                    f"Le plugin ne peut pas choisir automatiquement la bonne ligne"
+                ),
+                'action': (
+                    f"Comparer les sources GESPOT citees pour l'appui {num}, "
+                    f"corriger la source pour ne garder qu'une version coherente, "
+                    f"puis relancer"
+                ),
+            })
+
+
+# ===========================================================================
+#  CHARGEMENT DU RÉPERTOIRE CSV (historique)
 # ===========================================================================
 
 def load_gespot_dir(gespot_dir: str,

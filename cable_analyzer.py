@@ -1,3 +1,11 @@
+# Youcef ADDA | GEODECI
+# FR : Plugins QGIS, solutions SIG et administration PostgreSQL/PostGIS ; audit, automatisation et accompagnement.
+# EN : QGIS plugins, GIS solutions and PostgreSQL/PostGIS administration; audits, workflow automation and business support.
+# AR : تطوير إضافات QGIS وحلول نظم المعلومات الجغرافية وإدارة PostgreSQL/PostGIS، والتدقيق والأتمتة ومرافقة المؤسسات.
+# Site / Website / الموقع : https://geodeci.xyz/
+# Contact professionnel / Business enquiries / للتواصل المهني : youcef.geodesien@gmail.com | contact@geodeci.xyz
+# Détails / Details / التفاصيل : SIGNATURE.md
+# ============================================================================
 """
 Analyseur de charge câbles par appui - Police C6 v2.0
 Compte les câbles découpés qui intersectent chaque appui
@@ -8,10 +16,11 @@ from typing import List, Dict, Optional, Tuple
 import re
 from qgis.core import (
     QgsVectorLayer, QgsFeature, QgsGeometry, QgsPointXY,
-    QgsMessageLog, Qgis, QgsSpatialIndex, QgsRectangle
+    QgsMessageLog, Qgis, QgsSpatialIndex, QgsRectangle,
+    QgsFeatureRequest
 )
 
-from .db_connection import CableSegment
+from .cable_segment import CableSegment
 from .compat import MSG_INFO, MSG_WARNING
 
 _RE_CABLE_CAPACITE = re.compile(r'([A-Z]{1,3}\d*\.?\d*)-(\d+)P', re.IGNORECASE)
@@ -102,21 +111,48 @@ class CableAnalyzer:
             "PoleAerien", MSG_INFO
         )
         
+        # Pre-extraire les extremites des cables une seule fois
+        parsed_cables = []
+        for cable in cables:
+            if not cable.geom_wkt:
+                continue
+            cable_geom = QgsGeometry.fromWkt(cable.geom_wkt)
+            if not cable_geom or cable_geom.isEmpty():
+                continue
+            if cable_geom.type() == 1:
+                line = (
+                    cable_geom.asMultiPolyline()[0]
+                    if cable_geom.isMultipart() and cable_geom.asMultiPolyline()
+                    else cable_geom.asPolyline()
+                )
+                if len(line) >= 2:
+                    parsed_cables.append((cable, line[0], line[-1]))
+
+        tol = self.tolerance
         for appui in appuis:
             num_appui = str(appui.get('num_appui', ''))
             geom = appui.get('geom')
-            
+
             if not num_appui or not geom:
                 continue
-            
-            # Convertir en QgsGeometry si nécessaire
+
             if isinstance(geom, QgsPointXY):
+                appui_pt = geom
                 geom = QgsGeometry.fromPointXY(geom)
-            
-            # Trouver les câbles qui touchent cet appui
-            cables_touchant = self._find_cables_touching_appui(geom, cables)
-            
-            # Calculer les stats
+            else:
+                appui_pt = geom.asPoint()
+
+            ax, ay = appui_pt.x(), appui_pt.y()
+            cables_touchant = []
+            for cable, start_pt, end_pt in parsed_cables:
+                if (
+                    (abs(ax - start_pt.x()) <= tol and abs(ay - start_pt.y()) <= tol
+                     and appui_pt.distance(start_pt) <= tol)
+                    or (abs(ax - end_pt.x()) <= tol and abs(ay - end_pt.y()) <= tol
+                        and appui_pt.distance(end_pt) <= tol)
+                ):
+                    cables_touchant.append(cable)
+
             result = AppuiChargeResult(
                 num_appui=num_appui,
                 geom=geom,
@@ -124,9 +160,9 @@ class CableAnalyzer:
                 capacite_totale_bdd=sum(c.cab_capa for c in cables_touchant),
                 cables_details=cables_touchant
             )
-            
+
             self.resultats[num_appui] = result
-        
+
         return self.resultats
     
     def _find_cables_touching_appui(
@@ -312,13 +348,23 @@ def extraire_appuis_from_layer(layer: QgsVectorLayer, field_num_appui: str = 'nu
         return appuis
     
     from .core_utils import normalize_appui_num
-    idx_inf_num = layer.fields().indexFromName('inf_num')
-    idx_inf_type = layer.fields().indexFromName('inf_type')
-    idx_etat = layer.fields().indexFromName('etat')
-    idx_noe_codext = layer.fields().indexFromName('noe_codext')
-    
-    for feature in layer.getFeatures():
-        num_appui = feature[actual_field]
+    fields = layer.fields()
+    idx_actual = fields.indexFromName(actual_field)
+    idx_inf_num = fields.indexFromName('inf_num')
+    idx_inf_type = fields.indexFromName('inf_type')
+    idx_etat = fields.indexFromName('etat')
+    idx_noe_codext = fields.indexFromName('noe_codext')
+
+    attr_indices = sorted({
+        i for i in (idx_actual, idx_inf_num, idx_inf_type, idx_etat, idx_noe_codext)
+        if i >= 0
+    })
+    req = QgsFeatureRequest()
+    if attr_indices:
+        req.setSubsetOfAttributes(attr_indices)
+
+    for feature in layer.getFeatures(req):
+        num_appui = feature[idx_actual] if idx_actual >= 0 else feature[actual_field]
         if num_appui:
             num_norm = normalize_appui_num(num_appui, keep_commune=keep_commune)
             inf_num_norm = normalize_appui_num(_safe_attr_text(feature, idx_inf_num), keep_commune=keep_commune)
@@ -332,8 +378,90 @@ def extraire_appuis_from_layer(layer: QgsVectorLayer, field_num_appui: str = 'nu
                     'etat': _safe_attr_text(feature, idx_etat),
                     'noe_codext': _safe_attr_text(feature, idx_noe_codext),
                 })
-    
+
     return appuis
+
+
+def extraire_appuis_wkb_both(
+    layer: QgsVectorLayer,
+    field_num_appui: str = 'num_appui',
+) -> Tuple[List[Dict], List[Dict]]:
+    """Extrait les appuis WKB avec et sans commune en une seule passe couche."""
+    if not layer or not layer.isValid():
+        return [], []
+
+    fields = layer.fields()
+    field_names = [f.name() for f in fields]
+    actual_field = None
+    for candidate in (
+        field_num_appui, 'inf_num', 'INF_NUM',
+        'num_appui', 'NUM_APPUI', 'pt_ad_numsu', 'PT_AD_NUMSU',
+    ):
+        if candidate in field_names:
+            actual_field = candidate
+            break
+    if not actual_field:
+        return [], []
+
+    from .core_utils import normalize_appui_num
+    idx_actual = fields.indexFromName(actual_field)
+    idx_inf_num = fields.indexFromName('inf_num')
+    idx_inf_type = fields.indexFromName('inf_type')
+    idx_etat = fields.indexFromName('etat')
+    idx_noe_codext = fields.indexFromName('noe_codext')
+
+    attr_indices = sorted({
+        i for i in (idx_actual, idx_inf_num, idx_inf_type, idx_etat, idx_noe_codext)
+        if i >= 0
+    })
+    req = QgsFeatureRequest()
+    if attr_indices:
+        req.setSubsetOfAttributes(attr_indices)
+
+    with_commune: List[Dict] = []
+    without_commune: List[Dict] = []
+
+    for feature in layer.getFeatures(req):
+        num_appui = feature[idx_actual] if idx_actual >= 0 else feature[actual_field]
+        if not num_appui:
+            continue
+        raw_inf_text = _safe_attr_text(feature, idx_inf_num)
+        num_com = normalize_appui_num(num_appui, keep_commune=True)
+        num_nocom = normalize_appui_num(num_appui, keep_commune=False)
+        if not num_com and not num_nocom:
+            continue
+
+        geom = feature.geometry()
+        wkb_bytes = geom.asWkb().data() if geom and not geom.isNull() else None
+        fid = feature.id()
+        inf_type = _safe_attr_text(feature, idx_inf_type)
+        etat = _safe_attr_text(feature, idx_etat)
+        noe_codext = _safe_attr_text(feature, idx_noe_codext)
+
+        if num_com:
+            inf_com = normalize_appui_num(raw_inf_text, keep_commune=True) or num_com
+            with_commune.append({
+                'num_appui': num_com,
+                'inf_num': inf_com,
+                'feature_id': fid,
+                'geom_wkb': wkb_bytes,
+                'inf_type': inf_type,
+                'etat': etat,
+                'noe_codext': noe_codext,
+            })
+        if num_nocom:
+            inf_nocom = normalize_appui_num(raw_inf_text, keep_commune=False) or num_nocom
+            without_commune.append({
+                'num_appui': num_nocom,
+                'inf_num': inf_nocom,
+                'feature_id': fid,
+                'geom_wkb': wkb_bytes,
+                'inf_type': inf_type,
+                'etat': etat,
+                'noe_codext': noe_codext,
+            })
+
+    return with_commune, without_commune
 
 
 def extraire_appuis_wkb(layer: QgsVectorLayer, field_num_appui: str = 'num_appui',
@@ -396,6 +524,10 @@ def _parse_attaches_geoms(attaches_raw: List[Dict]) -> List[Dict]:
             'geom': geom,
             'start': QgsGeometry.fromPointXY(line[0]),
             'end': QgsGeometry.fromPointXY(line[-1]),
+            'sx': line[0].x(),
+            'sy': line[0].y(),
+            'ex': line[-1].x(),
+            'ey': line[-1].y(),
         })
     return parsed
 
@@ -419,13 +551,27 @@ def _get_attache_extensions(
         Liste de QgsGeometry points representant les extensions
     """
     extensions = []
+    if not appui_geom or appui_geom.isEmpty():
+        return extensions
+    pt = appui_geom.asPoint()
+    ax, ay = pt.x(), pt.y()
+    tol_sq = tolerance * tolerance
     for att in attaches:
-        dist_start = appui_geom.distance(att['start'])
-        dist_end = appui_geom.distance(att['end'])
-        if dist_start <= tolerance:
-            extensions.append(att['end'])
-        elif dist_end <= tolerance:
-            extensions.append(att['start'])
+        if 'sx' in att:
+            dx_s = ax - att['sx']
+            dy_s = ay - att['sy']
+            if abs(dx_s) <= tolerance and abs(dy_s) <= tolerance and (dx_s * dx_s + dy_s * dy_s) <= tol_sq:
+                extensions.append(att['end'])
+                continue
+            dx_e = ax - att['ex']
+            dy_e = ay - att['ey']
+            if abs(dx_e) <= tolerance and abs(dy_e) <= tolerance and (dx_e * dx_e + dy_e * dy_e) <= tol_sq:
+                extensions.append(att['start'])
+        else:
+            if appui_geom.distance(att['start']) <= tolerance:
+                extensions.append(att['end'])
+            elif appui_geom.distance(att['end']) <= tolerance:
+                extensions.append(att['start'])
     return extensions
 
 
@@ -435,7 +581,6 @@ def compter_cables_par_appui(
     tolerance: float = 1.5,
     group_by_gid: bool = False,
     attaches_parsed: Optional[List[Dict]] = None,
-    match_mode: str = 'endpoint',
     cab_types: Optional[set] = None
 ) -> Dict[str, Dict]:
     """
@@ -452,9 +597,6 @@ def compter_cables_par_appui(
         attaches_parsed: Liste de dicts {gid, geom, start, end} depuis
             _parse_attaches_geoms(). Si fourni, les cables connectes via
             une attache sont aussi comptabilises.
-        match_mode: 'endpoint' = match extremites seulement (fddcpi2: segments
-            decoupes aux appuis). 'line' = match distance appui-to-ligne entiere
-            (GraceTHD: cables non decoupes, route complete BPE-BPE).
         cab_types: Set de cab_type acceptes (ex: {'CDI'} ou {'CDI','TRA','RAC'}).
             Si None, accepte tous les types passes (pas de filtre interne).
     
@@ -469,10 +611,7 @@ def compter_cables_par_appui(
             "PoleAerien", MSG_INFO
         )
         return result
-    
-    use_line_distance = (match_mode == 'line')
-    
-    
+
     # Creer index spatial des appuis + extensions via attaches
     appuis_by_id = {}
     extensions_by_appui = {}
@@ -526,7 +665,6 @@ def compter_cables_par_appui(
     nb_cables_tested = 0
     nb_total_matches = 0
     nb_endpoint_matches = 0
-    nb_midline_matches = 0
     for cable in cables:
         if cab_types is not None and getattr(cable, 'cab_type', '') not in cab_types:
             nb_cables_skipped_type += 1
@@ -559,20 +697,22 @@ def compter_cables_par_appui(
             start_point = QgsGeometry.fromPointXY(line[0])
             end_point = QgsGeometry.fromPointXY(line[-1])
 
-            # Candidats via index spatial: O(log n) au lieu de O(n)
-            if use_line_distance:
-                _search_bbox = cable_geom.boundingBox()
-                _search_bbox.grow(tolerance)
-            else:
-                _sx, _sy = line[0].x(), line[0].y()
-                _ex, _ey = line[-1].x(), line[-1].y()
-                _search_bbox = QgsRectangle(
-                    min(_sx, _ex) - tolerance, min(_sy, _ey) - tolerance,
-                    max(_sx, _ex) + tolerance, max(_sy, _ey) + tolerance
-                )
+            # Candidats via index spatial (deux boites serrees aux extremites)
+            _sx, _sy = line[0].x(), line[0].y()
+            _ex, _ey = line[-1].x(), line[-1].y()
+            _bbox_start = QgsRectangle(
+                _sx - tolerance, _sy - tolerance,
+                _sx + tolerance, _sy + tolerance
+            )
+            _bbox_end = QgsRectangle(
+                _ex - tolerance, _ey - tolerance,
+                _ex + tolerance, _ey + tolerance
+            )
+            _cand_fids = set(_appuis_idx.intersects(_bbox_start))
+            _cand_fids.update(_appuis_idx.intersects(_bbox_end))
             candidate_nums = {
                 _pos_id_to_num[_fid]
-                for _fid in _appuis_idx.intersects(_search_bbox)
+                for _fid in _cand_fids
                 if _fid in _pos_id_to_num
             }
 
@@ -582,33 +722,18 @@ def compter_cables_par_appui(
                 if not appui_geom:
                     continue
 
-                if use_line_distance:
-                    # GraceTHD: cable = route complete (non decoupe),
-                    # verifier distance appui-to-ligne entiere
-                    touches = (appui_geom.distance(cable_geom) <= tolerance)
-                    # Determiner si appui est au milieu ou a une extremite
-                    # Milieu = 2 efforts (cable passe a travers)
-                    # Extremite = 1 effort (cable s'arrete)
-                    at_endpoint = False
-                    if touches:
-                        d_s = appui_geom.distance(start_point)
-                        d_e = appui_geom.distance(end_point)
-                        at_endpoint = (d_s <= tolerance or d_e <= tolerance)
-                else:
-                    # fddcpi2: cable = segment decoupe, extremites aux appuis
-                    dist_start = appui_geom.distance(start_point)
-                    dist_end = appui_geom.distance(end_point)
+                # fddcpi2: cable = segment decoupe, extremites aux appuis
+                dist_start = appui_geom.distance(start_point)
+                dist_end = appui_geom.distance(end_point)
+                touches = (dist_start <= tolerance or dist_end <= tolerance)
 
-                    touches = (dist_start <= tolerance or dist_end <= tolerance)
-                    at_endpoint = True  # fddcpi2: toujours par extremite
+                if not touches and appui_num in extensions_by_appui:
+                    for ext_pt in extensions_by_appui[appui_num]:
+                        if (ext_pt.distance(start_point) <= tolerance or
+                                ext_pt.distance(end_point) <= tolerance):
+                            touches = True
+                            break
 
-                    if not touches and appui_num in extensions_by_appui:
-                        for ext_pt in extensions_by_appui[appui_num]:
-                            if (ext_pt.distance(start_point) <= tolerance or
-                                    ext_pt.distance(end_point) <= tolerance):
-                                touches = True
-                                break
-                
                 if touches:
                     # Déduplication par GID physique si demandé (COMAC)
                     if group_by_gid:
@@ -616,18 +741,11 @@ def compter_cables_par_appui(
                         if gid in result[appui_num]['_gids_seen']:
                             continue
                         result[appui_num]['_gids_seen'].add(gid)
-                    
-                    # GraceTHD Police C6: appui au milieu = 2 efforts
-                    # (le cable passe a travers, il porte 2 charges)
-                    n_efforts = 1
-                    if use_line_distance and not group_by_gid and not at_endpoint:
-                        n_efforts = 2
-                        nb_midline_matches += 1
-                    else:
-                        nb_endpoint_matches += 1
+
+                    nb_endpoint_matches += 1
                     nb_total_matches += 1
-                    
-                    result[appui_num]['count'] += n_efforts
+
+                    result[appui_num]['count'] += 1
                     cable_entry = {
                         'id': cable.gid_dc2,
                         'gid': getattr(cable, 'gid', 0),
@@ -636,10 +754,9 @@ def compter_cables_par_appui(
                         'cb_etiquet': getattr(cable, 'cb_etiquet', '') or '',
                         'cab_type': getattr(cable, 'cab_type', '') or '',
                     }
-                    for _ in range(n_efforts):
-                        if cable.cab_capa:
-                            result[appui_num]['capacites'].append(cable.cab_capa)
-                        result[appui_num]['cables'].append(cable_entry)
+                    if cable.cab_capa:
+                        result[appui_num]['capacites'].append(cable.cab_capa)
+                    result[appui_num]['cables'].append(cable_entry)
         except Exception as e:
             QgsMessageLog.logMessage(
                 f"Erreur comptage câble: {e}",
@@ -652,7 +769,7 @@ def compter_cables_par_appui(
         f"compter_cables_par_appui RESULTAT: "
         f"{nb_cables_tested} cables testes ({nb_cables_skipped_type} exclus type/pose, "
         f"{nb_cables_skipped_geom} sans geom) | "
-        f"{nb_total_matches} matches ({nb_endpoint_matches} endpoint, {nb_midline_matches} milieu) | "
+        f"{nb_total_matches} matches endpoint | "
         f"{nb_with_cables}/{len(result)} appuis avec cables",
         "PoleAerien", MSG_INFO
     )
@@ -954,7 +1071,7 @@ def verifier_boitiers(
 
 @dataclass
 class TronconBDD:
-    """Troncon reconstruit depuis les segments BDD ou infere depuis GraceTHD."""
+    """Troncon reconstruit depuis les segments BDD fddcpi2."""
     cable_gid: int
     cable_ref: str
     capacite_fo: int
@@ -988,7 +1105,36 @@ def reconstituer_portees_bdd(
 
     appuis_by_num = {a['num_appui']: a['geom'] for a in appuis
                      if a.get('num_appui') and a.get('geom')}
-    appui_list = list(appuis_by_num.items())
+    if not appuis_by_num:
+        return []
+
+    appui_idx = QgsSpatialIndex()
+    fid_to_appui: Dict[int, Tuple[str, QgsGeometry]] = {}
+    for fid_counter, (num, geom) in enumerate(appuis_by_num.items()):
+        if geom and not geom.isNull():
+            feat = QgsFeature(fid_counter)
+            feat.setGeometry(geom)
+            appui_idx.addFeature(feat)
+            fid_to_appui[fid_counter] = (num, geom)
+
+    def _nearest_indexed(pt_xy: QgsPointXY, pt_geom: QgsGeometry) -> Optional[str]:
+        px, py = pt_xy.x(), pt_xy.y()
+        bbox = QgsRectangle(
+            px - tolerance, py - tolerance,
+            px + tolerance, py + tolerance
+        )
+        best_name = None
+        best_dist = tolerance + 1.0
+        for fid in appui_idx.intersects(bbox):
+            item = fid_to_appui.get(fid)
+            if not item:
+                continue
+            name, geom = item
+            dist = pt_geom.distance(geom)
+            if dist <= tolerance and dist < best_dist:
+                best_dist = dist
+                best_name = name
+        return best_name
 
     troncons = []
     nb_one_end = 0
@@ -1018,8 +1164,8 @@ def reconstituer_portees_bdd(
         start_pt = QgsGeometry.fromPointXY(line[0])
         end_pt = QgsGeometry.fromPointXY(line[-1])
 
-        best_start = _find_nearest_appui(start_pt, appui_list, tolerance)
-        best_end = _find_nearest_appui(end_pt, appui_list, tolerance)
+        best_start = _nearest_indexed(line[0], start_pt)
+        best_end = _nearest_indexed(line[-1], end_pt)
 
         if best_start and best_end and best_start != best_end:
             troncons.append(TronconBDD(
@@ -1045,171 +1191,13 @@ def reconstituer_portees_bdd(
     return troncons
 
 
-def extraire_portees_gracethd(
-    cables_with_nodes: List[Dict],
-    appuis: List[Dict],
-    tolerance: float = 2.0,
-) -> List[TronconBDD]:
-    """Infere les portees depuis les cables GraceTHD (non decoupes).
-
-    Utilise les noeuds terminaux cb_nd1/cb_nd2 (depuis t_cable.csv) comme
-    ancrage fiable aux extremites, et la projection lineaire pour les
-    poteaux intermediaires.
-
-    GraceTHD: chaque cable est une LineString continue BPE-a-BPE.
-    Les poteaux ne sont pas sur la ligne mais a 1-2m. Methode:
-    1. Ancrer les extremites via nd1_geom/nd2_geom (certitude)
-    2. Trouver les poteaux intermediaires a distance < tolerance
-    3. Projeter chaque poteau sur la ligne (lineLocatePoint)
-    4. Ordonner par fraction croissante (nd1=0, nd2=1)
-    5. Calculer portee = longueur entre projections consecutives
-
-    Args:
-        cables_with_nodes: Liste de dicts depuis GraceTHDReader.load_cables_with_nodes()
-            {cb_code, cb_etiquet, cab_capa, cb_nd1, cb_nd2,
-             nd1_geom, nd2_geom, cable_geom, cable_length}
-        appuis: Liste de dicts {'num_appui': str, 'geom': QgsGeometry}
-        tolerance: Distance max (m) poteau-cable pour intermediaires
-
-    Returns:
-        Liste de TronconBDD avec source='GraceTHD' et confiance variable
-    """
-    if not cables_with_nodes or not appuis:
-        return []
-
-    appuis_by_num = {a['num_appui']: a['geom'] for a in appuis
-                     if a.get('num_appui') and a.get('geom')}
-
-    # Index spatial O(log n): evite O(cables x appuis) dans la boucle principale
-    _gt_idx = QgsSpatialIndex()
-    _gt_id_to_num: Dict[int, str] = {}
-    for _gi, (_gnum, _ggeom) in enumerate(appuis_by_num.items()):
-        if not _ggeom.isNull():
-            _gfeat = QgsFeature(_gi)
-            _gfeat.setGeometry(_ggeom)
-            _gt_idx.addFeature(_gfeat)
-            _gt_id_to_num[_gi] = _gnum
-
-    # Index inverse : nd_code -> num_appui (pour ancrer nd1/nd2 a un appui)
-    # Construit en comparant les geometries nd1/nd2 avec les appuis
-    nd_to_appui = {}
-
-    troncons = []
-    nb_cables_no_appui = 0
-    nb_cables_ok = 0
-
-    for cable in cables_with_nodes:
-        cable_geom = cable.get('cable_geom')
-        if not cable_geom or cable_geom.isNull() or cable_geom.isEmpty():
-            continue
-
-        cable_length = cable.get('cable_length', cable_geom.length())
-        if cable_length < 0.1:
-            continue
-
-        # --- Ancrage extremites via nd1/nd2 ---
-        nd1_geom = cable.get('nd1_geom')
-        nd2_geom = cable.get('nd2_geom')
-        cb_nd1 = cable.get('cb_nd1', '')
-        cb_nd2 = cable.get('cb_nd2', '')
-
-        # Resoudre nd1 -> appui (cache)
-        nd1_appui = _resolve_nd_to_appui(
-            cb_nd1, nd1_geom, appuis_by_num, nd_to_appui, tolerance
-        )
-        nd2_appui = _resolve_nd_to_appui(
-            cb_nd2, nd2_geom, appuis_by_num, nd_to_appui, tolerance
-        )
-
-        # --- Projections des poteaux proches via index spatial ---
-        projections = []
-        _cable_bbox = cable_geom.boundingBox()
-        _cable_bbox.grow(tolerance)
-        for _gid in _gt_idx.intersects(_cable_bbox):
-            num_appui = _gt_id_to_num[_gid]
-            appui_geom = appuis_by_num[num_appui]
-            dist = appui_geom.distance(cable_geom)
-            if dist <= tolerance:
-                frac = cable_geom.lineLocatePoint(appui_geom)
-                is_endpoint = (num_appui == nd1_appui or num_appui == nd2_appui)
-                conf = 1.0 if is_endpoint else max(0.0, 1.0 - (dist / tolerance))
-                projections.append((frac, num_appui, dist, conf))
-
-        if len(projections) < 2:
-            nb_cables_no_appui += 1
-            continue
-
-        projections.sort(key=lambda x: x[0])
-        nb_cables_ok += 1
-
-        # --- Generer troncons consecutifs ---
-        for i in range(len(projections) - 1):
-            frac_a, name_a, _dist_a, conf_a = projections[i]
-            frac_b, name_b, _dist_b, conf_b = projections[i + 1]
-
-            if name_a == name_b:
-                continue
-
-            portee = round(frac_b - frac_a, 1)
-            if portee < 0.5:
-                continue
-
-            troncons.append(TronconBDD(
-                cable_gid=hash(cable.get('cb_code', '')) & 0x7FFFFFFF,
-                cable_ref=cable.get('cb_etiquet', ''),
-                capacite_fo=cable.get('cab_capa', 0),
-                support_depart=name_a,
-                support_arrivee=name_b,
-                portee_m=portee,
-                source='GraceTHD',
-                confiance=round(min(conf_a, conf_b), 2),
-            ))
-
-    QgsMessageLog.logMessage(
-        f"extraire_portees_gracethd: {len(troncons)} troncons inferes "
-        f"depuis {nb_cables_ok} cables ({nb_cables_no_appui} sans appuis proches)",
-        "PoleAerien", MSG_INFO
-    )
-    return troncons
-
-
-def _resolve_nd_to_appui(
-    nd_code: str,
-    nd_geom: Optional[QgsGeometry],
-    appuis_by_num: Dict[str, QgsGeometry],
-    cache: Dict[str, Optional[str]],
-    tolerance: float,
-) -> Optional[str]:
-    """Resout un noeud GraceTHD (cb_nd1/cb_nd2) vers un appui QGIS.
-
-    Cherche dans le cache d'abord, puis par proximite spatiale.
-    """
-    if nd_code in cache:
-        return cache[nd_code]
-
-    if not nd_geom or nd_geom.isNull():
-        cache[nd_code] = None
-        return None
-
-    best_name = None
-    best_dist = tolerance + 1.0
-    for name, geom in appuis_by_num.items():
-        dist = nd_geom.distance(geom)
-        if dist <= tolerance and dist < best_dist:
-            best_dist = dist
-            best_name = name
-
-    cache[nd_code] = best_name
-    return best_name
-
-
 def comparer_portees(
     portees_pcm: list,
     troncons_ref: List[TronconBDD],
     tolerance_pct: float = 15.0,
     name_map: Optional[Dict[str, str]] = None,
 ) -> List[Dict]:
-    """Compare les portees PCM avec les troncons reconstruits (BDD ou GraceTHD).
+    """Compare les portees PCM avec les troncons reconstruits depuis la BDD.
 
     Matching par paire de poteaux (depart, arrivee). Les noms PCM sont
     traduits via name_map si fourni (BT0030 -> inf_num QGIS normalise).
@@ -1217,7 +1205,7 @@ def comparer_portees(
 
     Args:
         portees_pcm: Liste de PorteePCM depuis pcm_parser.extraire_portees_par_cable()
-        troncons_ref: Liste de TronconBDD depuis reconstituer_portees_bdd/extraire_portees_gracethd
+        troncons_ref: Liste de TronconBDD depuis reconstituer_portees_bdd
         tolerance_pct: Ecart max (%) entre portee PCM et portee ref pour statut OK
         name_map: {nom_pcm_normalise -> inf_num_qgis} pour traduire les noms PCM
 
