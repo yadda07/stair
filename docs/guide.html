@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ST-AIR v4.2.0 // Guide Sous-Traitant</title>
+<title>ST-AIR v4.3.0 // Guide Sous-Traitant</title>
 <style>
   :root {
     --bg: #0c0a07;
@@ -108,13 +108,13 @@
 </head>
 <body>
   <div class="top-bar">
-    <strong>ST-AIR v4.2.0 // Guide Sous-Traitant</strong>
+    <strong>ST-AIR v4.3.0 // Guide Sous-Traitant</strong>
     <a href="index.html">&lt;- Retour au portail interactif</a>
   </div>
   <div class="content">
     
 <h1 style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;"><span style=" font-size:xx-large; font-weight:700;">Guide sous-traitant - Plugin ST-AIR</span></h1>
-<p style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">Version 4.2.0 - Public cible : sous-traitants FTTH aerien.</p>
+<p style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">Version 4.3.0 - Public cible : sous-traitants FTTH aerien.</p>
 <p style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">Ce guide est <span style=" font-weight:700;">autonome</span>. Il ne necessite aucune connaissance prealable du plugin, de QGIS avance ou du format des donnees. A la fin de la lecture, vous savez installer le plugin, preparer votre dossier de projet, lancer une analyse complete et lire le rapport.</p>
 <hr />
 <h2 style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;"><span style=" font-size:x-large; font-weight:700;">Sommaire</span></h2>
@@ -202,7 +202,7 @@
 <h2 style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;"><span style=" font-size:x-large; font-weight:700;">3. Installation du plugin</span></h2>
 <h3 style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;"><span style=" font-size:large; font-weight:700;">3.1 Installation depuis un fichier ZIP</span></h3>
 <ol style="margin-top: 0px; margin-bottom: 0px; margin-left: 0px; margin-right: 0px; -qt-list-indent: 1;">
-<li style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">Recuperez le fichier ST-AIR-v4.2.0.zip fourni par votre donneur d'ordre.</li>
+<li style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">Recuperez le fichier ST-AIR-v4.3.0.zip fourni par votre donneur d'ordre.</li>
 <li style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">Ouvrez QGIS.</li>
 <li style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">Menu <span style=" font-weight:700;">Extensions</span> -&gt; <span style=" font-weight:700;">Installer/Gerer les extensions</span>.</li>
 <li style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">Onglet <span style=" font-weight:700;">Installer depuis un ZIP</span>.</li>
@@ -941,7 +941,7 @@
 <h3 style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;"><span style=" font-size:large; font-weight:700;">12.6 Le plugin envoie-t-il des donnees quelque part ?</span></h3>
 <p style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;"><span style=" font-weight:700;">Non.</span> Aucune connexion reseau. Aucune telemetrie.</p>
 <h3 style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;"><span style=" font-size:large; font-weight:700;">12.7 Puis-je personnaliser les criteres du rapport ?</span></h3>
-<p style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">Non en version 4.2.0. Les seuils metier (tolerances, listes de valeurs) sont figes dans le code. Demandez au donneur d'ordre si vous pensez qu'un seuil est mal calibre.</p>
+<p style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">Non en version 4.3.0. Les seuils metier (tolerances, listes de valeurs) sont figes dans le code. Demandez au donneur d'ordre si vous pensez qu'un seuil est mal calibre.</p>
 <h3 style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;"><span style=" font-size:large; font-weight:700;">12.8 Les FicheAppui_*.xlsx sont ignorees par certains modules, pourquoi ?</span></h3>
 <p style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">Le plugin considere ces fichiers comme des <span style=" font-weight:700;">sources CAP_FT</span>, pas des annexes C6 Orange. Donc le module C6_vs_BD ne les lit pas (par design).</p>
 <hr />

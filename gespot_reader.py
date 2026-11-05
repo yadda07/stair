@@ -60,6 +60,7 @@ _COL_DECLASS_PT3 = 54
 _COL_DIST_ELEC = 67
 
 _CODES_DECLASSE = {'00', '01'}
+_CODES_UNUSABLE = {'00', '01', '05'}
 _CODES_INACC_ENV = {'IN8', 'IN9'}
 
 
@@ -141,6 +142,14 @@ def _normalize_to_empty(value: str) -> str:
     return str(value).strip()
 
 
+def _clean_code(value: str) -> str:
+    """Retourne le code nettoye, '' pour None, vide ou NULL."""
+    if value is None:
+        return ''
+    v = str(value).strip()
+    return '' if v.upper() == 'NULL' else v
+
+
 def _br01_calc_type(type_raw: str, caracs: List[str]) -> str:
     """BR-01 : Calcule le type d'appui final depuis type + CARAC1-5."""
     base = type_raw.strip()
@@ -172,26 +181,36 @@ def _br02_calc_strategie(strategique: str, support_pc: str,
     return 'Non'
 
 
-def _br03_calc_env(envs: List[str]) -> Tuple[str, bool]:
-    """BR-03 : Extrait milieu environnant et détecte inaccessibilité ENV."""
-    has_inacc = False
+def _br03_calc_env(envs: List[str]) -> Tuple[str, str]:
+    """BR-03 : Extrait milieu environnant et code inaccessibilité ENV."""
+    inacc_env = ''
     milieu = ''
     for v in envs:
-        code = v.strip().upper()
+        clean = _clean_code(v)
+        code = clean.upper()
         if code in _CODES_INACC_ENV:
-            has_inacc = True
+            inacc_env = inacc_env or code
         elif code and not milieu:
-            milieu = v.strip()
-    return milieu, has_inacc
+            milieu = clean
+    return milieu, inacc_env
 
 
 def _br04_calc_etat(etat_pts: List[Tuple[str, str]]) -> Tuple[str, str, str]:
     """BR-04 : Détermine etat_no_yellow, etat_usable, ctrl_visuel."""
+    no_yellow = 'Oui'
+    usable = 'Oui'
+    ctrl = 'Oui'
     for etat, declass in etat_pts:
-        if etat.strip() in _CODES_DECLASSE:
-            ctrl = 'Non' if declass.strip() else 'Oui'
-            return 'Non', 'Non', ctrl
-    return 'Oui', 'Oui', 'Oui'
+        e_code = _clean_code(etat)
+        d_code = _clean_code(declass)
+        if e_code in _CODES_DECLASSE:
+            no_yellow = 'Non'
+            usable = 'Non'
+        elif e_code in _CODES_UNUSABLE:
+            usable = 'Non'
+        if d_code and ctrl == 'Oui':
+            ctrl = d_code
+    return no_yellow, usable, ctrl
 
 
 def _br04bis_calc_pres_elect(pres_elect_raw: str) -> str:
@@ -199,14 +218,14 @@ def _br04bis_calc_pres_elect(pres_elect_raw: str) -> str:
     return _normalize_oui_non(pres_elect_raw)
 
 
-def _br05_calc_inacc(inacc_raw: str, has_inacc_env: bool) -> str:
-    """BR-05 : Calcule l'inaccessibilité véhicule."""
-    # Si env IN8 est present, il prime sur tout
-    if has_inacc_env:
-        return 'Oui'
-    # Sinon, si inacc_raw est explicitement 'O'/'OUI', on retourne 'Oui'
+def _br05_calc_inacc(inacc_raw: str, inacc_env: str) -> str:
+    """BR-05 : Code C6 d'inaccessibilité (IN8/IN9 env, INV, Non)."""
+    # Code env prioritaire
+    if inacc_env:
+        return inacc_env
+    # Inaccessibilite vehicule
     if _normalize_oui_non(inacc_raw) != 'Non':
-        return 'Oui'
+        return 'INV'
     return 'Non'
 
 
@@ -269,7 +288,7 @@ def _build_record(row: List[str], source: str,
         (col(_COL_ETAT_PT3), col(_COL_DECLASS_PT3)),
     ]
 
-    milieu, has_inacc_env = _br03_calc_env(envs)
+    milieu, inacc_env = _br03_calc_env(envs)
     etat_no_yellow, etat_usable, ctrl_visuel = _br04_calc_etat(etat_pts)
     num_voie_raw = col(_COL_NUM_VOIE)
 
@@ -285,7 +304,7 @@ def _build_record(row: List[str], source: str,
             col(_COL_STRATEGIQUE), col(_COL_SUPPORT_PC), caracs, whitelist_upper),
         milieu_calc=milieu,
         pres_elect_calc=_br04bis_calc_pres_elect(col(_COL_PRES_ELECT)),
-        inacc_calc=_br05_calc_inacc(col(_COL_INACC), has_inacc_env),
+        inacc_calc=_br05_calc_inacc(col(_COL_INACC), inacc_env),
         recalage_raw=col(_COL_RECALAGE),
         etat_no_yellow=etat_no_yellow,
         etat_usable=etat_usable,
@@ -308,10 +327,7 @@ _NAMED_ETAT_KEYS = (
 
 def _attr_str(attrs: Dict[str, Any], key: str) -> str:
     """Extrait une valeur d'un dict d'attributs, normalise en str.strip()."""
-    v = attrs.get(key)
-    if v is None:
-        return ''
-    return str(v).strip()
+    return _clean_code(attrs.get(key))
 
 
 def _build_record_from_dict(
@@ -335,7 +351,7 @@ def _build_record_from_dict(
         for ek, dk in _NAMED_ETAT_KEYS
     ]
 
-    milieu, has_inacc_env = _br03_calc_env(envs)
+    milieu, inacc_env = _br03_calc_env(envs)
     etat_no_yellow, etat_usable, ctrl_visuel = _br04_calc_etat(etat_pts)
 
     return GespotRecord(
@@ -354,7 +370,7 @@ def _build_record_from_dict(
         pres_elect_calc=_br04bis_calc_pres_elect(
             _attr_str(attrs, 'pres_elect')),
         inacc_calc=_br05_calc_inacc(
-            _attr_str(attrs, 'inacc'), has_inacc_env),
+            _attr_str(attrs, 'inacc'), inacc_env),
         recalage_raw=_attr_str(attrs, 'recalage'),
         etat_no_yellow=etat_no_yellow,
         etat_usable=etat_usable,

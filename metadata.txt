@@ -6,7 +6,7 @@ name=ST-AIR
 qgisMinimumVersion=3.28
 qgisMaximumVersion=4.99
 description=Controle qualite des livrables sous-traitants FTTH aerien. Analyse croisee shapefiles + Excel + CSV, rapport unifie multi-modules.
-version=4.2.0
+version=4.3.0
 author=ST-AIR, Youcef ADDA
 email=youcef.geodesien@gmail.com
 
@@ -40,6 +40,7 @@ repository=https://example.org/st-air
 hasProcessingProvider=no
 
 changelog=
+    4.3.0 (2026-11-05) - GESPOT_ANALYSE : etat_pt 05 rend l'appui non utilisable, declass_pt reporte dans CTRL_VIS_GESPOT, INACC_GESPOT = IN8 (env) ou INV (inacc = O), NULL QGIS neutralises, colonne DISTANCE_ELECTRIQUE.
     4.2.0 (2026-11-04) - Optimisation ressources, mode asynchrone integral (QgsTask + ThreadPoolExecutor sans blocage UI), requetes PyQGIS ciblees (setSubsetOfAttributes, FR_NO_GEOMETRY, QgsSpatialIndex) et gestion memoire complete.
     4.1.0 (2026-11-03) - Modernisation de l'interface (jetons WCAG AA, surfaces Fluent/VTT, grille Bento, ParcoursVisuel) et ouverture de la documentation dans un panneau ancrable QGIS (QgsDockWidget).
     4.0.1 (2026-07-09) - Corrections GESPOT : NULL/Non équivalents, fallback stratégie sur carac1-5, contrôles adresse/centre désactivés.

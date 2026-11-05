@@ -1220,6 +1220,7 @@ def _write_gespot_analyse(wb, comparisons):
         'YELLOW_GESPOT', 'YELLOW_C6', 'STATUT_YELLOW', 'DETAIL_YELLOW',
         'USABLE_GESPOT', 'USABLE_C6', 'STATUT_USABLE', 'DETAIL_USABLE',
         'CTRL_VIS_GESPOT', 'CTRL_VIS_C6', 'STATUT_CTRL_VIS', 'DETAIL_CTRL_VIS',
+        'DISTANCE_ELECTRIQUE',
         'NB_KO', 'STATUT_GLOBAL', 'SOURCE_GESPOT', 'SOURCE_C6',
     ]
     if has_etude:
@@ -1250,6 +1251,7 @@ def _write_gespot_analyse(wb, comparisons):
             cmp.yellow_gespot, cmp.yellow_c6, cmp.statut_yellow, cmp.detail_yellow,
             cmp.usable_gespot, cmp.usable_c6, cmp.statut_usable, cmp.detail_usable,
             cmp.ctrl_vis_gespot, cmp.ctrl_vis_c6, cmp.statut_ctrl_vis, cmp.detail_ctrl_vis,
+            cmp.dist_elec_gespot,
             cmp.nb_ecarts, cmp.statut_global, cmp.source_gespot, cmp.source_c6,
         ])
         for col_idx, val in enumerate(values, 1):

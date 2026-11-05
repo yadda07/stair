@@ -132,7 +132,12 @@ class TestBuildRecordFromDict:
     def test_inacc_from_env_codes(self):
         attrs = _make_row(envs=["IN8", "", "", "", ""])
         rec = _build_record_from_dict(attrs, "data_gespot", set())
-        assert rec.inacc_calc == "Oui"
+        assert rec.inacc_calc == "IN8"
+
+    def test_inacc_from_inacc_o(self):
+        attrs = _make_row(inacc="O")
+        rec = _build_record_from_dict(attrs, "data_gespot", set())
+        assert rec.inacc_calc == "INV"
 
     def test_recalage_br06(self):
         attrs = _make_row(recalage="O")
@@ -145,6 +150,57 @@ class TestBuildRecordFromDict:
         assert rec.etat_no_yellow == "Non"
         assert rec.etat_usable == "Non"
         assert rec.ctrl_visuel == "Oui"
+
+    def test_etat_05_and_declass_epa_br04(self):
+        attrs = _make_row(etat_pts=[("06", "NULL"), ("05", "EPA"), ("NULL", "NULL")])
+        rec = _build_record_from_dict(attrs, "data_gespot", set())
+        assert rec.etat_no_yellow == "Oui"
+        assert rec.etat_usable == "Non"
+        assert rec.ctrl_visuel == "EPA"
+
+    def test_etat_05_on_pt3_br04(self):
+        attrs = _make_row(etat_pts=[("06", ""), ("06", ""), ("05", "")])
+        rec = _build_record_from_dict(attrs, "data_gespot", set())
+        assert rec.etat_usable == "Non"
+        assert rec.ctrl_visuel == "Oui"
+
+    def test_first_declass_wins_br04(self):
+        attrs = _make_row(etat_pts=[("06", "EPA"), ("05", "XYZ"), ("", "")])
+        rec = _build_record_from_dict(attrs, "data_gespot", set())
+        assert rec.ctrl_visuel == "EPA"
+
+    def test_etat_all_null_br04(self):
+        attrs = _make_row(etat_pts=[("NULL", "NULL")] * 3)
+        rec = _build_record_from_dict(attrs, "data_gespot", set())
+        assert rec.etat_no_yellow == "Oui"
+        assert rec.etat_usable == "Oui"
+        assert rec.ctrl_visuel == "Oui"
+
+    def test_env_in8_on_env4(self):
+        attrs = _make_row(envs=["NULL", "URB", "", "IN8", ""])
+        rec = _build_record_from_dict(attrs, "data_gespot", set())
+        assert rec.inacc_calc == "IN8"
+        assert rec.milieu_calc == "URB"
+
+    def test_env_in8_wins_over_inacc_o(self):
+        attrs = _make_row(inacc="O", envs=["IN8", "", "", "", ""])
+        rec = _build_record_from_dict(attrs, "data_gespot", set())
+        assert rec.inacc_calc == "IN8"
+
+    def test_env_in9_returns_in9(self):
+        attrs = _make_row(envs=["IN9", "", "", "", ""])
+        rec = _build_record_from_dict(attrs, "data_gespot", set())
+        assert rec.inacc_calc == "IN9"
+
+    def test_env_code_n_preserved(self):
+        attrs = _make_row(envs=["N", "", "", "", ""])
+        rec = _build_record_from_dict(attrs, "data_gespot", set())
+        assert rec.milieu_calc == "N"
+
+    def test_null_text_treated_as_empty(self):
+        attrs = _make_row(voie="NULL")
+        rec = _build_record_from_dict(attrs, "data_gespot", set())
+        assert rec.voie == ""
 
     def test_none_values_treated_as_empty(self):
         attrs = _make_row()
@@ -270,31 +326,31 @@ class TestBr04bisCalcPresElectWithNull:
 
 class TestBr05CalcInaccWithNull:
     def test_inacc_null_no_env_returns_non(self):
-        assert _br05_calc_inacc('NULL', False) == 'Non'
+        assert _br05_calc_inacc('NULL', '') == 'Non'
 
     def test_inacc_null_lowercase_no_env_returns_non(self):
-        assert _br05_calc_inacc('null', False) == 'Non'
+        assert _br05_calc_inacc('null', '') == 'Non'
 
     def test_inacc_non_no_env_returns_non(self):
-        assert _br05_calc_inacc('Non', False) == 'Non'
+        assert _br05_calc_inacc('Non', '') == 'Non'
 
-    def test_inacc_null_with_env_returns_oui(self):
+    def test_inacc_null_with_env_returns_in8(self):
         # env IN8 prime sur inacc_raw
-        assert _br05_calc_inacc('NULL', True) == 'Oui'
+        assert _br05_calc_inacc('NULL', 'IN8') == 'IN8'
 
-    def test_inacc_null_lowercase_with_env_returns_oui(self):
+    def test_inacc_null_lowercase_with_env_returns_in8(self):
         # env IN8 prime sur inacc_raw
-        assert _br05_calc_inacc('null', True) == 'Oui'
+        assert _br05_calc_inacc('null', 'IN8') == 'IN8'
 
-    def test_inacc_non_with_env_returns_oui(self):
+    def test_inacc_non_with_env_returns_in8(self):
         # env IN8 prime sur inacc_raw
-        assert _br05_calc_inacc('Non', True) == 'Oui'
+        assert _br05_calc_inacc('Non', 'IN8') == 'IN8'
 
-    def test_inacc_o_no_env_returns_oui(self):
-        assert _br05_calc_inacc('O', False) == 'Oui'
+    def test_inacc_o_no_env_returns_inv(self):
+        assert _br05_calc_inacc('O', '') == 'INV'
 
-    def test_inacc_oui_no_env_returns_oui(self):
-        assert _br05_calc_inacc('Oui', False) == 'Oui'
+    def test_inacc_oui_no_env_returns_inv(self):
+        assert _br05_calc_inacc('Oui', '') == 'INV'
 
 
 class TestBr06CalcRecalageWithNull:

@@ -27,6 +27,16 @@ from .gespot_reader import GespotLoadResult, load_gespot_from_rows
 _logger = logging.getLogger(__name__)
 
 
+def _clean_value(val):
+    """Convertit NULL QGIS en '' et nettoie les chaines."""
+    if val is None or (hasattr(val, 'isNull') and val.isNull()):
+        return ''
+    if isinstance(val, str):
+        s = val.strip()
+        return '' if s.upper() == 'NULL' else s
+    return val
+
+
 def extract_rows_from_qgs_layer(layer) -> tuple:
     """Extrait les dicts d'attributs bruts depuis une couche QGIS.
 
@@ -60,13 +70,7 @@ def extract_rows_from_qgs_layer(layer) -> tuple:
     for feat in layer.getFeatures():
         attrs = {}
         for field in fields:
-            val = feat[field.name()]
-            if val is None:
-                attrs[field.name().lower()] = ''
-            else:
-                attrs[field.name().lower()] = (
-                    str(val).strip() if isinstance(val, str) else val
-                )
+            attrs[field.name().lower()] = _clean_value(feat[field.name()])
         rows.append(attrs)
 
     source_label = layer.name()
@@ -117,11 +121,7 @@ def load_gespot_from_qgs_layer(
         n_features += 1
         attrs = {}
         for field in fields:
-            val = feat[field.name()]
-            if val is None:
-                attrs[field.name().lower()] = ''
-            else:
-                attrs[field.name().lower()] = str(val).strip() if isinstance(val, str) else val
+            attrs[field.name().lower()] = _clean_value(feat[field.name()])
         rows.append(attrs)
 
     source_label = layer.name()

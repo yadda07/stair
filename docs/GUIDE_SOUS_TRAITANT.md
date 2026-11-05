@@ -1,6 +1,6 @@
 # Guide sous-traitant - Plugin ST-AIR
 
-Version 4.2.0 - Public cible : sous-traitants FTTH aerien.
+Version 4.3.0 - Public cible : sous-traitants FTTH aerien.
 
 Ce guide est **autonome**. Il ne necessite aucune connaissance prealable du
 plugin, de QGIS avance ou du format des donnees. A la fin de la lecture,

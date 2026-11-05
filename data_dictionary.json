@@ -864,7 +864,7 @@
             {
               "element_id": "g_inacc_gespot",
               "name": "INACC_GESPOT",
-              "definition": "Inaccessibilite GESPOT (vehicule nacelle impossible).",
+              "definition": "Inaccessibilite GESPOT. IN8 si env1-5 contient IN8/IN9 (prioritaire), INV si inacc = O, sinon Non.",
               "data_type": "string",
               "nullable": true
             },
@@ -940,7 +940,7 @@
             {
               "element_id": "g_usable_gespot",
               "name": "USABLE_GESPOT",
-              "definition": "Appui utilisable GESPOT (peut supporter nouveaux cables).",
+              "definition": "Appui utilisable GESPOT. Non si etat_pt1, 2 ou 3 vaut 00, 01 ou 05, sinon Oui.",
               "data_type": "string",
               "nullable": true
             },
@@ -961,7 +961,7 @@
             {
               "element_id": "g_ctrl_vis_gespot",
               "name": "CTRL_VIS_GESPOT",
-              "definition": "Controle visuel GESPOT.",
+              "definition": "Controle visuel GESPOT. Premier declass_pt1-3 renseigne (ex. EPA), sinon Oui.",
               "data_type": "string",
               "nullable": true
             },
@@ -978,6 +978,13 @@
               "definition": "Comparaison controle visuel.",
               "data_type": "string",
               "uses_domain": "ok_column_domain"
+            },
+            {
+              "element_id": "g_dist_elec",
+              "name": "DISTANCE_ELECTRIQUE",
+              "definition": "Distance electrique issue de GESPOT (data_gespot).",
+              "data_type": "string",
+              "nullable": true
             },
             {
               "element_id": "g_nb_ecarts",
